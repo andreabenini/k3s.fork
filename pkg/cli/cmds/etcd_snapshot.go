@@ -42,7 +42,7 @@ var EtcdSnapshotFlags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:        "name",
-		Usage:       "(db) Set the base name of the etcd on-demand snapshot (appended with UNIX timestamp).",
+		Usage:       "(db) Set the base name of the etcd on-demand snapshot, appended with UNIX timestamp",
 		Destination: &ServerConfig.EtcdSnapshotName,
 		Value:       "on-demand",
 	},
@@ -124,6 +124,13 @@ var EtcdSnapshotFlags = []cli.Flag{
 		Destination: &ServerConfig.EtcdS3Region,
 		Value:       "us-east-1",
 	},
+	&cli.IntFlag{
+		Name:        "s3-retention",
+		Aliases:     []string{"etcd-s3-retention"},
+		Usage:       "(db) Number of s3 snapshots to retain.",
+		Destination: &ServerConfig.EtcdS3Retention,
+		Value:       defaultSnapshotRentention,
+	},
 	&cli.StringFlag{
 		Name:        "s3-folder",
 		Aliases:     []string{"etcd-s3-folder"},
@@ -160,6 +167,7 @@ var EtcdSnapshotFlags = []cli.Flag{
 func NewEtcdSnapshotCommands(delete, list, prune, save func(ctx *cli.Context) error) *cli.Command {
 	return &cli.Command{
 		Name:            EtcdSnapshotCommand,
+		Usage:           "Manage etcd snapshots",
 		SkipFlagParsing: false,
 		Subcommands: []*cli.Command{
 			{

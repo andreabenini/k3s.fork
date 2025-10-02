@@ -35,7 +35,6 @@ jobs:
     uses: ./.github/workflows/build-k3s.yaml
     with:
       upload-image: true
-      cache: ${{ github.ref == 'refs/heads/master' && 'write' || 'read' }}
   build-arm64:
     uses: ./.github/workflows/build-k3s.yaml
     permissions:
@@ -44,7 +43,6 @@ jobs:
     with:
       arch: arm64
       upload-image: true
-      cache: ${{ github.ref == 'refs/heads/master' && 'write' || 'read' }}
   e2e:
     name: "E2E Tests"
     needs: build
@@ -57,20 +55,20 @@ jobs:
       max-parallel: 5
     steps:
       - name: "Checkout"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with: {fetch-depth: 1}
       
       - name: Set up vagrant and libvirt
         uses: ./.github/actions/vagrant-setup
       - name: Vagrant R/W Cache
-        if: matrix.etest != 'btrfs' && github.ref == 'refs/heads/master'
+        if: matrix.etest != 'btrfs' && github.ref == 'refs/heads/main'
         uses: actions/cache@v4
         with:
           path: |
              ~/.vagrant.d/boxes
           key: ${{ matrix.etest != 'btrfs' && 'vagrant-box-ubuntu-2404' || 'vagrant-box-leap' }}
       - name: Vagrant Read Cache
-        if: matrix.etest != 'btrfs' && github.ref != 'refs/heads/master'
+        if: matrix.etest != 'btrfs' && github.ref != 'refs/heads/main'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -85,7 +83,7 @@ jobs:
            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
       - name: "Download k3s binary"
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: k3s-amd64
           path: ./dist/artifacts
@@ -96,12 +94,12 @@ jobs:
         run: | 
           chmod +x ./dist/artifacts/k3s
           cd tests/e2e/${{ matrix.etest }}
-          go test -timeout=45m ./${{ matrix.etest}}_test.go -test.v -ginkgo.v -ci -local
+          go test -timeout=45m ./${{ matrix.etest }}_test.go -test.v -ginkgo.v -ci -local
       - name: On Failure, Upload Journald Logs
         uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with:
-          name: e2e-${{ matrix.etest}}-logs
+          name: e2e-${{ matrix.etest }}-logs
           path: tests/e2e/${{ matrix.etest }}/*log.txt
           retention-days: 30
       - name: On Failure, Launch Debug Session
@@ -128,7 +126,7 @@ jobs:
       channel: ${{ steps.channel_step.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: Build Go Tests
@@ -181,9 +179,9 @@ jobs:
       CHANNEL: ${{ needs.build-go-tests.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: "Download K3s image"
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: k3s-${{ matrix.arch }}
         path: ./dist/artifacts
@@ -197,7 +195,7 @@ jobs:
         IMAGE_TAG=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep 'rancher/k3s')
         echo "K3S_IMAGE=$IMAGE_TAG" >> $GITHUB_ENV
     - name: Download Go Tests
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: docker-go-tests-${{ matrix.arch }}
         path: ./dist/artifacts

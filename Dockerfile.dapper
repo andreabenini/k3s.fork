@@ -1,13 +1,5 @@
-ARG GOLANG=golang:1.24.2-alpine3.21
+ARG GOLANG=golang:1.24.6-alpine3.22
 FROM ${GOLANG}
-
-# Set proxy environment variables
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-ENV http_proxy=${http_proxy} \
-    https_proxy=${https_proxy} \
-    no_proxy=${no_proxy}
 
 # Install necessary packages
 RUN apk -U --no-cache add \
@@ -28,8 +20,8 @@ RUN case "$(go env GOARCH)" in \
     amd64) TRIVY_ARCH="64bit" ;; \
     s390x) TRIVY_ARCH="s390x" ;; \
     *) TRIVY_ARCH="" ;; \
-    esac
-RUN if [ -n "${TRIVY_ARCH}" ]; then \ 
+    esac && \
+    if [ -n "${TRIVY_ARCH}" ]; then \ 
         wget --no-verbose "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" \
         && tar -zxvf "trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" \
         && mv trivy /usr/local/bin; \

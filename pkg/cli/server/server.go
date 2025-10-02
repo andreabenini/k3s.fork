@@ -27,16 +27,15 @@ import (
 	"github.com/k3s-io/k3s/pkg/profile"
 	"github.com/k3s-io/k3s/pkg/rootless"
 	"github.com/k3s-io/k3s/pkg/server"
+	"github.com/k3s-io/k3s/pkg/signals"
 	"github.com/k3s-io/k3s/pkg/spegel"
 	"github.com/k3s-io/k3s/pkg/util"
 	"github.com/k3s-io/k3s/pkg/util/permissions"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/k3s-io/k3s/pkg/vpn"
 	pkgerrors "github.com/pkg/errors"
-	"github.com/rancher/wrangler/v3/pkg/signals"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
-	etcdversion "go.etcd.io/etcd/api/v3/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	kubeapiserverflag "k8s.io/component-base/cli/flag"
@@ -52,7 +51,7 @@ func RunWithControllers(app *cli.Context, leaderControllers server.CustomControl
 	return run(app, &cmds.ServerConfig, leaderControllers, controllers)
 }
 
-func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomControllers, controllers server.CustomControllers) error {
+func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomControllers, controllers server.CustomControllers) (rerr error) {
 	var err error
 	// Validate build env
 	cmds.MustValidateGolang()
@@ -75,6 +74,22 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 	if err := cmds.InitLogging(); err != nil {
 		return err
 	}
+
+	ctx := signals.SetupSignalContext()
+	wg := &sync.WaitGroup{}
+
+	// If exiting due to an error, ensure that contexts are cancelled so that the
+	// WaitGroup exits.  Otherwise, wait for something else to initiate shutdown.
+	defer func() {
+		if rerr != nil {
+			// do not need to pass the error in here, it will be reported by the CLI error handler
+			signals.RequestShutdown(nil)
+		} else {
+			<-ctx.Done()
+			rerr = ctx.Err()
+		}
+		wg.Wait()
+	}()
 
 	if !cfg.DisableAgent && !cfg.Rootless {
 		if err := permissions.IsPrivileged(); err != nil {
@@ -132,6 +147,12 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 			return err
 		}
 	}
+	serverConfig.ControlConfig.Datastore = etcd.DefaultEndpointConfig()
+	serverConfig.ControlConfig.Datastore.BackendTLSConfig.CAFile = cfg.DatastoreCAFile
+	serverConfig.ControlConfig.Datastore.BackendTLSConfig.CertFile = cfg.DatastoreCertFile
+	serverConfig.ControlConfig.Datastore.BackendTLSConfig.KeyFile = cfg.DatastoreKeyFile
+	serverConfig.ControlConfig.Datastore.Endpoint = cfg.DatastoreEndpoint
+	serverConfig.ControlConfig.Datastore.WaitGroup = wg
 	serverConfig.ControlConfig.DataDir = cfg.DataDir
 	serverConfig.ControlConfig.KubeConfigOutput = cfg.KubeConfigOutput
 	serverConfig.ControlConfig.KubeConfigMode = cfg.KubeConfigMode
@@ -151,17 +172,6 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 	serverConfig.ControlConfig.ExtraEtcdArgs = cfg.ExtraEtcdArgs.Value()
 	serverConfig.ControlConfig.ExtraSchedulerAPIArgs = cfg.ExtraSchedulerArgs.Value()
 	serverConfig.ControlConfig.ClusterDomain = cfg.ClusterDomain
-	serverConfig.ControlConfig.Datastore.BackendTLSConfig.CAFile = cfg.DatastoreCAFile
-	serverConfig.ControlConfig.Datastore.BackendTLSConfig.CertFile = cfg.DatastoreCertFile
-	serverConfig.ControlConfig.Datastore.BackendTLSConfig.KeyFile = cfg.DatastoreKeyFile
-	serverConfig.ControlConfig.Datastore.CompactBatchSize = 1000
-	serverConfig.ControlConfig.Datastore.CompactInterval = 5 * time.Minute
-	serverConfig.ControlConfig.Datastore.CompactMinRetain = 1000
-	serverConfig.ControlConfig.Datastore.CompactTimeout = 5 * time.Second
-	serverConfig.ControlConfig.Datastore.EmulatedETCDVersion = etcdversion.Version
-	serverConfig.ControlConfig.Datastore.Endpoint = cfg.DatastoreEndpoint
-	serverConfig.ControlConfig.Datastore.NotifyInterval = 5 * time.Second
-	serverConfig.ControlConfig.Datastore.PollBatchSize = 500
 	serverConfig.ControlConfig.KineTLS = cfg.KineTLS
 	serverConfig.ControlConfig.AdvertiseIP = cfg.AdvertiseIP
 	serverConfig.ControlConfig.AdvertisePort = cfg.AdvertisePort
@@ -217,6 +227,7 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 				SecretKey:     cfg.EtcdS3SecretKey,
 				SessionToken:  cfg.EtcdS3SessionToken,
 				SkipSSLVerify: cfg.EtcdS3SkipSSLVerify,
+				Retention:     cfg.EtcdS3Retention,
 				Timeout:       metav1.Duration{Duration: cfg.EtcdS3Timeout},
 			}
 		}
@@ -477,6 +488,7 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 		serverConfig.ControlConfig.DisableScheduler = true
 		serverConfig.ControlConfig.DisableCCM = true
 		serverConfig.ControlConfig.DisableServiceLB = true
+		serverConfig.ControlConfig.EtcdDisableSnapshots = true
 
 		// If the supervisor and apiserver are on the same port, everything is running embedded
 		// and we don't need the kubelet or containerd up to perform a cluster reset.
@@ -518,9 +530,7 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 	notifySocket := os.Getenv("NOTIFY_SOCKET")
 	os.Unsetenv("NOTIFY_SOCKET")
 
-	ctx := signals.SetupSignalContext()
-
-	if err := server.PrepareServer(ctx, &serverConfig, cfg); err != nil {
+	if err := server.PrepareServer(ctx, wg, &serverConfig, cfg); err != nil {
 		return err
 	}
 
@@ -546,20 +556,15 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 		agentConfig.RootlessAlreadyUnshared = true
 	}
 
-	if serverConfig.ControlConfig.DisableAPIServer {
-		if cfg.ServerURL == "" {
-			// If this node is the initial member of the cluster and is not hosting an apiserver,
-			// always bootstrap the agent off local supervisor, and go through the process of reading
-			// apiserver endpoints from etcd and blocking further startup until one is available.
-			// This ensures that we don't end up in a chicken-and-egg situation on cluster restarts,
-			// where the loadbalancer is routing traffic to existing apiservers, but the apiservers
-			// are non-functional because they're waiting for us to start etcd.
-			loadbalancer.ResetLoadBalancer(filepath.Join(agentConfig.DataDir, "agent"), loadbalancer.SupervisorServiceName)
-		} else {
-			// If this is a secondary member of the cluster and is not hosting an apiserver,
-			// bootstrap the agent off the existing supervisor, instead of bootstrapping locally.
-			agentConfig.ServerURL = cfg.ServerURL
-		}
+	if serverConfig.ControlConfig.DisableAPIServer && !cfg.ClusterReset {
+		// If this node is not hosting an apiserver, always bootstrap the agent off the local
+		// supervisor, and go through the process of reading apiserver endpoints from etcd and
+		// blocking further startup until one is available.  This ensures that we don't end up in
+		// a chicken-and-egg situation on cluster restarts, where the loadbalancer is routing
+		// traffic to existing apiservers, but the apiservers are non-functional because they're
+		// waiting for us to start etcd.
+		loadbalancer.ResetLoadBalancer(filepath.Join(agentConfig.DataDir, "agent"), loadbalancer.SupervisorServiceName)
+
 		// initialize the apiAddress Channel for receiving the api address from etcd
 		agentConfig.APIAddressCh = make(chan []string)
 		go getAPIAddressFromEtcd(ctx, serverConfig, agentConfig)
@@ -592,11 +597,11 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 
 	if cfg.DisableAgent {
 		agentConfig.ContainerRuntimeEndpoint = "/dev/null"
-		if err := agent.RunStandalone(ctx, agentConfig); err != nil {
+		if err := agent.RunStandalone(ctx, wg, agentConfig); err != nil {
 			return err
 		}
 	} else {
-		if err := agent.Run(ctx, agentConfig); err != nil {
+		if err := agent.Run(ctx, wg, agentConfig); err != nil {
 			return err
 		}
 	}
@@ -621,12 +626,11 @@ func run(app *cli.Context, cfg *cmds.Server, leaderControllers server.CustomCont
 		systemd.SdNotify(true, "READY=1\n")
 	}()
 
-	if err := server.StartServer(ctx, &serverConfig, cfg); err != nil {
+	if err := server.StartServer(ctx, wg, &serverConfig, cfg); err != nil {
 		return err
 	}
 
-	<-ctx.Done()
-	return ctx.Err()
+	return nil
 }
 
 // validateNetworkConfig ensures that the network configuration values make sense.
@@ -652,11 +656,15 @@ func getAPIAddressFromEtcd(ctx context.Context, serverConfig server.Config, agen
 		serverAddresses, err := etcd.GetAPIServerURLsFromETCD(toCtx, &serverConfig.ControlConfig)
 		if err == nil && len(serverAddresses) > 0 {
 			agentConfig.APIAddressCh <- serverAddresses
-			break
+			return
 		}
 		if !errors.Is(err, etcd.ErrAddressNotSet) {
 			logrus.Warnf("Failed to get apiserver address from etcd: %v", err)
 		}
-		<-toCtx.Done()
+		select {
+		case <-toCtx.Done():
+		case <-ctx.Done():
+			return
+		}
 	}
 }

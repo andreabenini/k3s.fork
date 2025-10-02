@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/etcd"
 	testutil "github.com/k3s-io/k3s/tests"
 	"github.com/k3s-io/k3s/tests/mock"
-	"github.com/k3s-io/kine/pkg/endpoint"
 	pkgerrors "github.com/pkg/errors"
-	etcdversion "go.etcd.io/etcd/api/v3/version"
 	"go.uber.org/mock/gomock"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -143,13 +142,14 @@ func Test_UnitServer(t *testing.T) {
 			managed.RegisterDriver(etcd.NewETCD())
 
 			ctx, cancel := context.WithCancel(context.Background())
+			wg := &sync.WaitGroup{}
 			defer func() {
 				// give time for the cluster datastore to finish saving after the cluster is started;
 				// it'll panic if the context is cancelled while this is in progress
 				time.Sleep(time.Second)
 				cancel()
 				// give time for etcd to shut down between tests, following context cancellation
-				time.Sleep(time.Second * 10)
+				wg.Wait()
 			}()
 
 			// generate control config
@@ -171,7 +171,7 @@ func Test_UnitServer(t *testing.T) {
 			}
 
 			// test Server now that everything's set up
-			if err := Server(ctx, cfg); (err != nil) != tt.wantErr {
+			if err := Server(ctx, wg, cfg); (err != nil) != tt.wantErr {
 				t.Errorf("Server() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -186,15 +186,7 @@ func mockControl(ctx context.Context, t *testing.T, clusterInit bool) (*config.C
 		ServerNodeName:       "k3s-server-1",
 		ServiceNodePortRange: &utilnet.PortRange{Base: 30000, Size: 2048},
 		Token:                "token",
-		Datastore: endpoint.Config{
-			CompactBatchSize:    1000,
-			CompactInterval:     5 * time.Minute,
-			CompactMinRetain:    1000,
-			CompactTimeout:      5 * time.Second,
-			EmulatedETCDVersion: etcdversion.Version,
-			NotifyInterval:      5 * time.Second,
-			PollBatchSize:       500,
-		},
+		Datastore:            etcd.DefaultEndpointConfig(),
 	}
 
 	if err := os.Chdir(control.DataDir); err != nil {

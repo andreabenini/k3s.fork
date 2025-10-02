@@ -60,7 +60,7 @@ var _ = Describe("Verify Create", Ordered, func() {
 			By("Fetching pod status")
 			Eventually(func() error {
 				e2e.DumpPods(tc.KubeconfigFile)
-				return tests.AllPodsUp(tc.KubeconfigFile)
+				return tests.AllPodsUp(tc.KubeconfigFile, "kube-system")
 			}, "620s", "10s").Should(Succeed())
 		})
 		It("Should create and validate deployment with embedded registry mirror using image tag", func() {
@@ -108,12 +108,15 @@ var _ = Describe("Verify Create", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		/* Disabled, ref: https://github.com/spegel-org/spegel/issues/1023
 		It("Should expose embedded registry metrics", func() {
 			grepCmd := fmt.Sprintf("kubectl get --raw /api/v1/nodes/%s/proxy/metrics | grep -F 'spegel_advertised_images{registry=\"docker.io\"}'", tc.Servers[0])
 			res, err := e2e.RunCommand(grepCmd)
 			fmt.Println(res)
 			Expect(err).NotTo(HaveOccurred())
 		})
+		*/
+
 		It("Should cleanup deployments", func() {
 			_, err := e2e.RunCommand("kubectl delete deployment my-webpage-1 my-webpage-2 my-webpage-3")
 			Expect(err).NotTo(HaveOccurred())

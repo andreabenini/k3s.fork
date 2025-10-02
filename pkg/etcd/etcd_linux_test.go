@@ -24,7 +24,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/etcdserver"
+	errorsv3 "go.etcd.io/etcd/server/v3/etcdserver/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -259,6 +259,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 	type contextInfo struct {
 		ctx    context.Context
 		cancel context.CancelFunc
+		wg     *sync.WaitGroup
 	}
 	type fields struct {
 		context contextInfo
@@ -289,6 +290,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				e.config.EtcdDisableSnapshots = true
 				testutil.GenerateRuntime(e.config)
 				return nil
@@ -297,9 +299,9 @@ func Test_UnitETCD_Start(t *testing.T) {
 				// RemoveSelf will fail with a specific error, but it still does cleanup for testing purposes
 				err := e.RemoveSelf(ctxInfo.ctx)
 				ctxInfo.cancel()
-				time.Sleep(10 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
-				if err != nil && err.Error() != etcdserver.ErrNotEnoughStartedMembers.Error() {
+				if err != nil && err.Error() != errorsv3.ErrNotEnoughStartedMembers.Error() {
 					return err
 				}
 				return nil
@@ -315,6 +317,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				return nil
 			},
@@ -322,9 +325,9 @@ func Test_UnitETCD_Start(t *testing.T) {
 				// RemoveSelf will fail with a specific error, but it still does cleanup for testing purposes
 				err := e.RemoveSelf(ctxInfo.ctx)
 				ctxInfo.cancel()
-				time.Sleep(10 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
-				if err != nil && err.Error() != etcdserver.ErrNotEnoughStartedMembers.Error() {
+				if err != nil && err.Error() != errorsv3.ErrNotEnoughStartedMembers.Error() {
 					return err
 				}
 				return nil
@@ -347,6 +350,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				return nil
 			},
@@ -354,9 +358,9 @@ func Test_UnitETCD_Start(t *testing.T) {
 				// RemoveSelf will fail with a specific error, but it still does cleanup for testing purposes
 				err := e.RemoveSelf(ctxInfo.ctx)
 				ctxInfo.cancel()
-				time.Sleep(10 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
-				if err != nil && err.Error() != etcdserver.ErrNotEnoughStartedMembers.Error() {
+				if err != nil && err.Error() != errorsv3.ErrNotEnoughStartedMembers.Error() {
 					return err
 				}
 				return nil
@@ -372,6 +376,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				if err := testutil.GenerateRuntime(e.config); err != nil {
 					return err
 				}
@@ -381,10 +386,10 @@ func Test_UnitETCD_Start(t *testing.T) {
 				// RemoveSelf will fail with a specific error, but it still does cleanup for testing purposes
 				err := e.RemoveSelf(ctxInfo.ctx)
 				ctxInfo.cancel()
-				time.Sleep(10 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				os.Remove(walDir(e.config))
-				if err != nil && err.Error() != etcdserver.ErrNotEnoughStartedMembers.Error() {
+				if err != nil && err.Error() != errorsv3.ErrNotEnoughStartedMembers.Error() {
 					return err
 				}
 				return nil
@@ -406,7 +411,7 @@ func Test_UnitETCD_Start(t *testing.T) {
 			if err := tt.setup(e, &tt.fields.context); err != nil {
 				t.Fatalf("Setup for ETCD.Start() failed = %v", err)
 			}
-			if err := e.Start(tt.fields.context.ctx, tt.args.clientAccessInfo); (err != nil) != tt.wantErr {
+			if err := e.Start(tt.fields.context.ctx, tt.fields.context.wg, tt.args.clientAccessInfo); (err != nil) != tt.wantErr {
 				t.Fatalf("ETCD.Start() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !tt.wantErr {
@@ -432,6 +437,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 	type contextInfo struct {
 		ctx    context.Context
 		cancel context.CancelFunc
+		wg     *sync.WaitGroup
 	}
 	type fields struct {
 		context contextInfo
@@ -459,12 +465,13 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				return e.startClient(ctxInfo.ctx)
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -479,13 +486,14 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				e.config.Runtime.EtcdConfig.Endpoints = []string{"https://192.0.2.0:2379"} // RFC5737
 				return e.startClient(ctxInfo.ctx)
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -500,6 +508,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				if err := startMock(ctxInfo.ctx, e, true, false, false, time.Second); err != nil {
 					return err
@@ -508,7 +517,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -523,6 +532,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				if err := startMock(ctxInfo.ctx, e, false, true, false, time.Second); err != nil {
 					return err
@@ -531,7 +541,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -546,6 +556,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				if err := startMock(ctxInfo.ctx, e, false, false, true, time.Second); err != nil {
 					return err
@@ -554,7 +565,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -569,6 +580,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				if err := startMock(ctxInfo.ctx, e, false, false, false, time.Second); err != nil {
 					return err
@@ -577,7 +589,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -592,6 +604,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				extraAlarm := &etcdserverpb.AlarmMember{MemberID: 2, Alarm: etcdserverpb.AlarmType_NOSPACE}
 				if err := startMock(ctxInfo.ctx, e, false, false, false, time.Second, extraAlarm); err != nil {
@@ -601,7 +614,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -616,6 +629,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			setup: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.ctx, ctxInfo.cancel = context.WithCancel(context.Background())
+				ctxInfo.wg = &sync.WaitGroup{}
 				testutil.GenerateRuntime(e.config)
 				if err := startMock(ctxInfo.ctx, e, false, false, false, 40*time.Second); err != nil {
 					return err
@@ -624,7 +638,7 @@ func Test_UnitETCD_Test(t *testing.T) {
 			},
 			teardown: func(e *ETCD, ctxInfo *contextInfo) error {
 				ctxInfo.cancel()
-				time.Sleep(1 * time.Second)
+				ctxInfo.wg.Wait()
 				testutil.CleanupDataDir(e.config)
 				return nil
 			},
@@ -642,18 +656,18 @@ func Test_UnitETCD_Test(t *testing.T) {
 			}
 
 			if err := tt.setup(e, &tt.fields.context); err != nil {
-				t.Errorf("Setup for ETCD.Test() failed = %v", err)
+				t.Errorf("Setup for ETCD.Test() %q failed = %v", tt.name, err)
 				return
 			}
 			start := time.Now()
 			err := e.Test(tt.fields.context.ctx)
 			duration := time.Now().Sub(start)
-			t.Logf("ETCD.Test() completed in %v with err=%v", duration, err)
+			t.Logf("ETCD.Test() %q completed in %v with err=%v", tt.name, duration, err)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ETCD.Test() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ETCD.Test() %q error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			}
 			if err := tt.teardown(e, &tt.fields.context); err != nil {
-				t.Errorf("Teardown for ETCD.Test() failed = %v", err)
+				t.Errorf("Teardown for ETCD.Test() %q failed = %v", tt.name, err)
 			}
 		})
 	}
@@ -814,7 +828,7 @@ func (m *mockEtcd) Status(context.Context, *etcdserverpb.StatusRequest) (*etcdse
 	}
 	if m.noLeader {
 		res.Leader = 0
-		res.Errors = append(res.Errors, etcdserver.ErrNoLeader.Error())
+		res.Errors = append(res.Errors, errorsv3.ErrNoLeader.Error())
 	}
 	for _, a := range m.alarms() {
 		res.Errors = append(res.Errors, a.String())
@@ -862,7 +876,7 @@ func (m *mockEtcd) MemberAdd(context.Context, *etcdserverpb.MemberAddRequest) (*
 }
 func (m *mockEtcd) MemberRemove(context.Context, *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
 	m.inc("memberremove")
-	return nil, etcdserver.ErrNotEnoughStartedMembers
+	return nil, errorsv3.ErrNotEnoughStartedMembers
 }
 func (m *mockEtcd) MemberUpdate(context.Context, *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
 	m.inc("memberupdate")

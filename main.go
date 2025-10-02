@@ -1,7 +1,3 @@
-//go:generate go run pkg/codegen/main.go
-//go:generate go fmt pkg/deploy/zz_generated_bindata.go
-//go:generate go fmt pkg/static/zz_generated_bindata.go
-
 package main
 
 import (
@@ -51,7 +47,10 @@ func main() {
 			cert.Rotate,
 			cert.RotateCA,
 		),
-		cmds.NewCompletionCommand(completion.Run),
+		cmds.NewCompletionCommand(
+			completion.Bash,
+			completion.Zsh,
+		),
 	}
 
 	if err := app.Run(configfilearg.MustParse(os.Args)); err != nil && !errors.Is(err, context.Canceled) {
