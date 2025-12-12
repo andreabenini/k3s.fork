@@ -49,13 +49,13 @@ jobs:
       max-parallel: 3
     steps:
     - name: Checkout
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
       with:
         fetch-depth: 1
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: "Download k3s binary"
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v6
       with:
         name: k3s-amd64
         path: ./dist/artifacts
@@ -66,7 +66,7 @@ jobs:
         cd tests/integration/${{ matrix.itest }}
         sudo -E env "PATH=$PATH" go test -timeout=45m ./... -run Integration -ginkgo.v -test.v
     - name: On Failure, Upload Logs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       if: ${{ failure() }}
       with:
         name: integration-${{ matrix.itest }}-logs
@@ -96,12 +96,12 @@ jobs:
       GOCOVERDIR: "D:/tmp/k3scov"
     steps:
     - name: Checkout
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
       with: {fetch-depth: 1}
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: Download k3s binary
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v6
       with:
         name: k3s-windows
         path: dist/artifacts/

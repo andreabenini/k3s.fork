@@ -3,6 +3,8 @@ package tests
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +16,21 @@ import (
 
 // This file consolidates functions that are used across multiple testing frameworks.
 // Most of it relates to interacting with the Kubernetes API and checking the status of resources.
+
+func RunCommand(cmd string) (string, error) {
+	c := exec.Command("bash", "-c", cmd)
+	if kc, ok := os.LookupEnv("E2E_KUBECONFIG"); ok {
+		c.Env = append(os.Environ(), "KUBECONFIG="+kc)
+	}
+	if kc, ok := os.LookupEnv("DOCKER_KUBECONFIG"); ok {
+		c.Env = append(os.Environ(), "KUBECONFIG="+kc)
+	}
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("failed to run command: %s, %v", cmd, err)
+	}
+	return string(out), err
+}
 
 // CheckDefaultDeployments checks if the standard array of K3s deployments are ready, otherwise returns an error
 func CheckDefaultDeployments(kubeconfigFile string) error {
@@ -62,7 +79,7 @@ func ParseNodes(kubeconfigFile string) ([]corev1.Node, error) {
 	return nodes.Items, nil
 }
 
-// Returns all internal IPs of the nodes in the cluster as map[node][ip]
+// GetInternalIPs returns all internal IPs of the nodes in the cluster as map[node][ip]
 func GetInternalIPs(kubeconfigFile string) (map[string]string, error) {
 	nodes, err := ParseNodes(kubeconfigFile)
 	if err != nil {
@@ -79,6 +96,32 @@ func GetInternalIPs(kubeconfigFile string) (map[string]string, error) {
 	return ips, nil
 }
 
+// GetNodeIPs returns all IP addresses attached to a node
+func GetNodeIPs(nodeName, kubeconfigFile string) ([]string, error) {
+	clientSet, err := K8sClient(kubeconfigFile)
+	if err != nil {
+		return nil, err
+	}
+
+	node, err := clientSet.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	var ips []string
+
+	// Get the primary node IP
+	if node.Status.Addresses != nil {
+		for _, address := range node.Status.Addresses {
+			if address.Type == corev1.NodeInternalIP || address.Type == corev1.NodeExternalIP {
+				ips = append(ips, address.Address)
+			}
+		}
+	}
+
+	return ips, nil
+}
+
 func ParsePods(kubeconfigFile, namespace string) ([]corev1.Pod, error) {
 	clientSet, err := K8sClient(kubeconfigFile)
 	if err != nil {
@@ -90,6 +133,36 @@ func ParsePods(kubeconfigFile, namespace string) ([]corev1.Pod, error) {
 	}
 
 	return pods.Items, nil
+}
+
+// GetPodIPs returns all IP addresses attached to a pod
+func GetPodIPs(podName, namespace, kubeconfigFile string) ([]string, error) {
+	clientSet, err := K8sClient(kubeconfigFile)
+	if err != nil {
+		return nil, err
+	}
+
+	pod, err := clientSet.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod %s/%s: %w", namespace, podName, err)
+	}
+
+	var ips []string
+
+	// Get the primary pod IP
+	if pod.Status.PodIP != "" {
+		ips = append(ips, pod.Status.PodIP)
+	}
+
+	// Get additional pod IPs (for dual-stack scenarios)
+	for _, podIP := range pod.Status.PodIPs {
+		// Avoid duplicating the primary IP
+		if podIP.IP != pod.Status.PodIP {
+			ips = append(ips, podIP.IP)
+		}
+	}
+
+	return ips, nil
 }
 
 // AllPodsUp checks if pods on the cluster are Running or Succeeded, otherwise returns an error

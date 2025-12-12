@@ -28,6 +28,7 @@ import (
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/etcd/s3"
 	"github.com/k3s-io/k3s/pkg/etcd/snapshot"
+	embedded "github.com/k3s-io/k3s/pkg/executor/embed/etcd"
 	"github.com/k3s-io/k3s/pkg/server/auth"
 	"github.com/k3s-io/k3s/pkg/signals"
 	"github.com/k3s-io/k3s/pkg/util"
@@ -204,8 +205,9 @@ func (e *ETCD) SetControlConfig(config *config.Control) error {
 // Test ensures that the local node is a voting member of the target cluster,
 // and that the datastore is defragmented and not in maintenance mode due to alarms.
 // If it is still a learner or not a part of the cluster, an error is raised.
+// If enableMaintenance is true, an attempt will be made to defagment the datastore and clear alarms.
 // If it cannot be defragmented or has any alarms that cannot be disarmed, an error is raised.
-func (e *ETCD) Test(ctx context.Context) error {
+func (e *ETCD) Test(ctx context.Context, enableMaintenance bool) error {
 	if e.config == nil {
 		return errors.New("control config not set")
 	}
@@ -223,8 +225,13 @@ func (e *ETCD) Test(ctx context.Context) error {
 	}
 
 	logrus.Infof("Connected to etcd v%s - datastore using %d of %d bytes", status.Version, status.DbSizeInUse, status.DbSize)
+
 	if len(status.Errors) > 0 {
 		logrus.Warnf("Errors present on etcd cluster: %s", strings.Join(status.Errors, ","))
+	}
+
+	if !enableMaintenance {
+		return nil
 	}
 
 	// defrag this node to reclaim freed space from compacted revisions
@@ -346,10 +353,14 @@ func (e *ETCD) Reset(ctx context.Context, wg *sync.WaitGroup, rebootstrap func()
 		defer wg.Done()
 		if executor.IsSelfHosted() {
 			// if the executor requires cri/kubelet to be up to run etcd, wait for container runtime
-			<-executor.CRIReadyChan()
+			select {
+			case <-executor.CRIReadyChan():
+			case <-ctx.Done():
+				return
+			}
 		}
 		wait.PollUntilContextCancel(ctx, time.Second*5, true, func(ctx context.Context) (bool, error) {
-			if err := e.Test(ctx); err == nil {
+			if err := e.Test(ctx, true); err == nil {
 				// reset the apiaddresses to nil since we are doing a restoration
 				if _, err := e.client.Put(ctx, AddressKey, ""); err != nil {
 					logrus.Warnf("failed to reset api addresses key in etcd: %v", err)
@@ -497,7 +508,11 @@ func (e *ETCD) Start(ctx context.Context, wg *sync.WaitGroup, clientAccessInfo *
 		defer wg.Done()
 		if executor.IsSelfHosted() {
 			// if the executor requires cri/kubelet to be up to run etcd, wait for container runtime
-			<-executor.CRIReadyChan()
+			select {
+			case <-executor.CRIReadyChan():
+			case <-ctx.Done():
+				return
+			}
 		}
 		// pollJoin blocks until the join is successful, or times out and initiates shutdown
 		e.pollJoin(ctx, wg, clientAccessInfo)
@@ -1111,8 +1126,7 @@ func (e *ETCD) StartEmbeddedTemporary(ctx context.Context, wg *sync.WaitGroup) e
 		return err
 	}
 
-	embedded := executor.Embedded{}
-	return embedded.ETCD(ctx, wg, &executor.ETCDConfig{
+	return embedded.StartETCD(ctx, wg, &executor.ETCDConfig{
 		InitialOptions:       executor.InitialOptions{AdvertisePeerURL: peerURL},
 		DataDir:              tmpDataDir,
 		ForceNewCluster:      true,
@@ -1132,7 +1146,7 @@ func (e *ETCD) StartEmbeddedTemporary(ctx context.Context, wg *sync.WaitGroup) e
 		},
 		ExperimentalInitialCorruptCheck:         true,
 		ExperimentalWatchProgressNotifyInterval: e.config.Datastore.NotifyInterval,
-	}, append(e.config.ExtraEtcdArgs, "--max-snapshots=0", "--max-wals=0"), e.Test)
+	}, append(e.config.ExtraEtcdArgs, "--max-snapshots=0", "--max-wals=0"))
 }
 
 func addPort(address string, offset int) (string, error) {
@@ -1211,7 +1225,11 @@ func (e *ETCD) RemovePeer(ctx context.Context, name, address string, allowSelfRe
 func (e *ETCD) manageLearners(ctx context.Context) {
 	if executor.IsSelfHosted() {
 		// if the executor requires cri/kubelet to be up to run etcd, wait for container runtime
-		<-executor.CRIReadyChan()
+		select {
+		case <-executor.CRIReadyChan():
+		case <-ctx.Done():
+			return
+		}
 	}
 	wait.UntilWithContext(ctx, func(ctx context.Context) {
 		ctx, cancel := context.WithTimeout(ctx, manageTickerTime)

@@ -7,12 +7,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/k3s-io/k3s/tests"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 )
@@ -28,6 +28,7 @@ type TestConfig struct {
 	Agents         []DockerNode
 	ServerYaml     string
 	AgentYaml      string
+	DualStack      bool // If true, the docker containers will be attached to a dual-stack network
 }
 
 type DockerNode struct {
@@ -35,6 +36,16 @@ type DockerNode struct {
 	IP   string
 	Port int    // Not filled by agent nodes
 	URL  string // Not filled by agent nodes
+}
+
+// RunCmdOnNode runs a command on a docker container
+func (node DockerNode) RunCmdOnNode(cmd string) (string, error) {
+	dCmd := fmt.Sprintf("docker exec %s /bin/sh -c \"%s\"", node.Name, cmd)
+	out, err := tests.RunCommand(dCmd)
+	if err != nil {
+		return out, fmt.Errorf("%v: on node %s: %s", err, node.Name, out)
+	}
+	return out, nil
 }
 
 // NewTestConfig initializes the test environment and returns the configuration
@@ -137,6 +148,19 @@ func (config *TestConfig) ProvisionServers(numOfServers int) error {
 			skipStart = "INSTALL_K3S_SKIP_START=true"
 		}
 
+		var dualStackConfig string
+		if config.DualStack {
+			// Check if the docker network exists, if not create it
+			networkName := "k3s-test-dualstack"
+			if _, err := tests.RunCommand(fmt.Sprintf("docker network inspect %s", networkName)); err != nil {
+				cmd := fmt.Sprintf("docker network create --ipv6 --subnet=fd11:decf:c0ff:ee::/64 %s", networkName)
+				if _, err := tests.RunCommand(cmd); err != nil {
+					return fmt.Errorf("failed to create dual-stack network: %v", err)
+				}
+			}
+			dualStackConfig = "--network " + networkName
+		}
+
 		// If we need restarts, we use the systemd-node container, volume mount the k3s binary
 		// and start the server using the install script
 		if config.K3sImage == "rancher/systemd-node" {
@@ -146,6 +170,7 @@ func (config *TestConfig) ProvisionServers(numOfServers int) error {
 				"--privileged",
 				"-p", fmt.Sprintf("127.0.0.1:%d:6443", port),
 				"--memory", "2048m",
+				dualStackConfig,
 				"-e", fmt.Sprintf("K3S_TOKEN=%s", config.Token),
 				"-e", "K3S_DEBUG=true",
 				"-e", "GOCOVERDIR=/tmp/k3s-cov",
@@ -156,7 +181,7 @@ func (config *TestConfig) ProvisionServers(numOfServers int) error {
 				"--mount", "type=bind,source=$(pwd)/../../../dist/artifacts/k3s,target=/usr/local/bin/k3s",
 				fmt.Sprintf("%s:v0.0.5", config.K3sImage),
 				"/usr/lib/systemd/systemd --unit=noop.target --show-status=true"}, " ")
-			if out, err := RunCommand(dRun); err != nil {
+			if out, err := tests.RunCommand(dRun); err != nil {
 				return fmt.Errorf("failed to start systemd container: %s: %v", out, err)
 			}
 			time.Sleep(5 * time.Second)
@@ -211,15 +236,21 @@ func (config *TestConfig) ProvisionServers(numOfServers int) error {
 				yamlMount,
 				config.K3sImage,
 				"server", dbConnect, joinServer, os.Getenv(fmt.Sprintf("SERVER_%d_ARGS", i))}, " ")
-			if out, err := RunCommand(dRun); err != nil {
+			if out, err := tests.RunCommand(dRun); err != nil {
 				return fmt.Errorf("failed to run server container: %s: %v", out, err)
 			}
 		}
 
 		// Get the IP address of the container
-		ipOutput, err := RunCommand("docker inspect --format \"{{ .NetworkSettings.IPAddress }}\" " + name)
+		var cmd string
+		if config.DualStack {
+			cmd = "docker inspect --format '{{range $k,$v := .NetworkSettings.Networks}}{{printf \"%s\" $v.IPAddress}}{{end}}' " + name
+		} else {
+			cmd = "docker inspect --format '{{ .NetworkSettings.IPAddress }}' " + name
+		}
+		ipOutput, err := tests.RunCommand(cmd)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get container IP address: %s: %v", ipOutput, err)
 		}
 		ip := strings.TrimSpace(ipOutput)
 
@@ -268,7 +299,7 @@ func (config *TestConfig) setupDatabase(startDB bool) (string, error) {
 	}
 
 	if startDB && startCmd != "" {
-		if out, err := RunCommand(startCmd); err != nil {
+		if out, err := tests.RunCommand(startCmd); err != nil {
 			return "", fmt.Errorf("failed to start %s container: %s: %v", config.DBType, out, err)
 		}
 		// Wait for DB to start
@@ -296,6 +327,10 @@ func (config *TestConfig) ProvisionAgents(numOfAgents int) error {
 				Name: name,
 			}
 
+			var dualStackConfig string
+			if config.DualStack {
+				dualStackConfig = "--network k3s-test-dualstack"
+			}
 			var skipStart string
 			if config.SkipStart {
 				skipStart = "INSTALL_K3S_SKIP_START=true"
@@ -306,6 +341,7 @@ func (config *TestConfig) ProvisionAgents(numOfAgents int) error {
 					"--hostname", name,
 					"--privileged",
 					"--memory", "2048m",
+					dualStackConfig,
 					"-e", fmt.Sprintf("K3S_TOKEN=%s", config.Token),
 					"-e", fmt.Sprintf("K3S_URL=%s", k3sURL),
 					"-v", "/sys/fs/bpf:/sys/fs/bpf",
@@ -315,7 +351,7 @@ func (config *TestConfig) ProvisionAgents(numOfAgents int) error {
 					"--mount", "type=bind,source=$(pwd)/../../../dist/artifacts/k3s,target=/usr/local/bin/k3s",
 					fmt.Sprintf("%s:v0.0.5", config.K3sImage),
 					"/usr/lib/systemd/systemd --unit=noop.target --show-status=true"}, " ")
-				if out, err := RunCommand(dRun); err != nil {
+				if out, err := tests.RunCommand(dRun); err != nil {
 					return fmt.Errorf("failed to start systemd container: %s: %v", out, err)
 				}
 				time.Sleep(5 * time.Second)
@@ -355,13 +391,19 @@ func (config *TestConfig) ProvisionAgents(numOfAgents int) error {
 					config.K3sImage,
 					"agent", os.Getenv("ARGS"), os.Getenv(agentInstanceArgs)}, " ")
 
-				if out, err := RunCommand(dRun); err != nil {
+				if out, err := tests.RunCommand(dRun); err != nil {
 					return fmt.Errorf("failed to run agent container: %s: %v", out, err)
 				}
 			}
 
 			// Get the IP address of the container
-			ipOutput, err := RunCommand("docker inspect --format \"{{ .NetworkSettings.IPAddress }}\" " + name)
+			var cmd string
+			if config.DualStack {
+				cmd = "docker inspect --format '{{range $k,$v := .NetworkSettings.Networks}}{{printf \"%s\" $v.IPAddress}}{{end}}' " + name
+			} else {
+				cmd = "docker inspect --format '{{ .NetworkSettings.IPAddress }}' " + name
+			}
+			ipOutput, err := tests.RunCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -383,11 +425,11 @@ func (config *TestConfig) ProvisionAgents(numOfAgents int) error {
 
 func (config *TestConfig) RemoveNode(nodeName string) error {
 	cmd := fmt.Sprintf("docker stop %s", nodeName)
-	if _, err := RunCommand(cmd); err != nil {
+	if _, err := tests.RunCommand(cmd); err != nil {
 		return fmt.Errorf("failed to stop node %s: %v", nodeName, err)
 	}
 	cmd = fmt.Sprintf("docker rm -v %s", nodeName)
-	if _, err := RunCommand(cmd); err != nil {
+	if _, err := tests.RunCommand(cmd); err != nil {
 		return fmt.Errorf("failed to remove node %s: %v", nodeName, err)
 	}
 	fmt.Println("Stopped and removed ", nodeName)
@@ -441,18 +483,25 @@ func (config *TestConfig) Cleanup() error {
 
 	// Remove volumes created by the agent/server containers
 	cmd := fmt.Sprintf("docker volume ls -q | grep -F %s | xargs -r docker volume rm", strings.ToLower(filepath.Base(config.TestDir)))
-	if _, err := RunCommand(cmd); err != nil {
+	if _, err := tests.RunCommand(cmd); err != nil {
 		errs = append(errs, fmt.Errorf("failed to remove volumes: %v", err))
 	}
 	// Stop DB if it was started
 	if config.DBType == "mysql" || config.DBType == "postgres" {
 		cmd := fmt.Sprintf("docker stop %s", config.DBType)
-		if _, err := RunCommand(cmd); err != nil {
+		if _, err := tests.RunCommand(cmd); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop %s: %v", config.DBType, err))
 		}
 		cmd = fmt.Sprintf("docker rm -v %s", config.DBType)
-		if _, err := RunCommand(cmd); err != nil {
+		if _, err := tests.RunCommand(cmd); err != nil {
 			errs = append(errs, fmt.Errorf("failed to remove %s: %v", config.DBType, err))
+		}
+	}
+
+	// Remove dual-stack network if it exists
+	if config.DualStack {
+		if _, err := tests.RunCommand("docker network rm k3s-test-dualstack"); err != nil {
+			errs = append(errs, fmt.Errorf("failed to remove dual-stack network: %v", err))
 		}
 	}
 
@@ -488,7 +537,7 @@ func (config *TestConfig) CopyAndModifyKubeconfig() error {
 	var cmd string
 	for i := 1; i <= 2; i++ {
 		cmd = fmt.Sprintf("docker cp %s:/etc/rancher/k3s/k3s.yaml %s/kubeconfig.yaml", config.Servers[serverID].Name, config.TestDir)
-		_, err = RunCommand(cmd)
+		_, err = tests.RunCommand(cmd)
 		if err != nil {
 			fmt.Printf("Failed to copy kubeconfig, attempt %d: %v\n", i, err)
 			time.Sleep(10 * time.Second)
@@ -500,33 +549,21 @@ func (config *TestConfig) CopyAndModifyKubeconfig() error {
 		return fmt.Errorf("failed to copy kubeconfig: %v", err)
 	}
 
-	cmd = fmt.Sprintf("sed -i -e \"s/:6443/:%d/g\" %s/kubeconfig.yaml", config.Servers[serverID].Port, config.TestDir)
-	if _, err := RunCommand(cmd); err != nil {
+	// Use the IPv4 localhost, not the IPv6 one, even on dual-stack setups
+	if config.DualStack {
+		cmd = fmt.Sprintf("sed -i -E 's~https://(\\[[^]]+\\]|[^:]+):6443~https://127.0.0.1:%d~g' %s/kubeconfig.yaml", config.Servers[serverID].Port, config.TestDir)
+	} else {
+		cmd = fmt.Sprintf("sed -i -e 's~:6443~:%d~g' %s/kubeconfig.yaml", config.Servers[serverID].Port, config.TestDir)
+	}
+	if _, err := tests.RunCommand(cmd); err != nil {
 		return fmt.Errorf("failed to update kubeconfig: %v", err)
 	}
 	config.KubeconfigFile = filepath.Join(config.TestDir, "kubeconfig.yaml")
+	if err := os.Setenv("DOCKER_KUBECONFIG", config.KubeconfigFile); err != nil {
+		return err
+	}
 	fmt.Println("Kubeconfig file: ", config.KubeconfigFile)
 	return nil
-}
-
-// RunCmdOnNode runs a command on a docker container
-func (node DockerNode) RunCmdOnNode(cmd string) (string, error) {
-	dCmd := fmt.Sprintf("docker exec %s /bin/sh -c \"%s\"", node.Name, cmd)
-	out, err := RunCommand(dCmd)
-	if err != nil {
-		return out, fmt.Errorf("%v: on node %s: %s", err, node.Name, out)
-	}
-	return out, nil
-}
-
-// RunCommand Runs command on the host.
-func RunCommand(cmd string) (string, error) {
-	c := exec.Command("bash", "-c", cmd)
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("failed to run command: %s, %v", cmd, err)
-	}
-	return string(out), err
 }
 
 func checkVersionSkew(config *TestConfig) error {
@@ -621,10 +658,24 @@ func (config TestConfig) DeployWorkload(workload string) (string, error) {
 		filename := filepath.Join(resourceDir, f.Name())
 		if strings.TrimSpace(f.Name()) == workload {
 			cmd := "kubectl apply -f " + filename + " --kubeconfig=" + config.KubeconfigFile
-			return RunCommand(cmd)
+			return tests.RunCommand(cmd)
 		}
 	}
 	return "", nil
+}
+
+func (config TestConfig) FetchClusterIP(servicename string) (string, error) {
+	if config.DualStack {
+		cmd := "kubectl get svc " + servicename + " -o jsonpath='{.spec.clusterIPs}' --kubeconfig=" + config.KubeconfigFile
+		res, err := tests.RunCommand(cmd)
+		if err != nil {
+			return res, err
+		}
+		res = strings.ReplaceAll(res, "\"", "")
+		return strings.Trim(res, "[]"), nil
+	}
+	cmd := "kubectl get svc " + servicename + " -o jsonpath='{.spec.clusterIP}' --kubeconfig=" + config.KubeconfigFile
+	return tests.RunCommand(cmd)
 }
 
 type svcExternalIP struct {
@@ -636,7 +687,7 @@ type svcExternalIP struct {
 func FetchExternalIPs(kubeconfig string, servicename string) ([]string, error) {
 	var externalIPs []string
 	cmd := "kubectl get svc " + servicename + " -o jsonpath='{.status.loadBalancer.ingress}' --kubeconfig=" + kubeconfig
-	output, err := RunCommand(cmd)
+	output, err := tests.RunCommand(cmd)
 	if err != nil {
 		return externalIPs, err
 	}
@@ -670,18 +721,29 @@ func RestartCluster(nodes []DockerNode) error {
 
 func DescribeNodesAndPods(config *TestConfig) string {
 	cmd := "kubectl describe node,pod -A --kubeconfig=" + config.KubeconfigFile
-	out, err := RunCommand(cmd)
+	out, err := tests.RunCommand(cmd)
 	if err != nil {
 		return fmt.Sprintf("** %v **\n%s", err, out)
 	}
 	return out
 }
 
+func ListContainers() string {
+	o, err := tests.RunCommand("docker container list --all --no-trunc")
+	if err != nil {
+		return fmt.Sprintf("** failed to list docker containers: %v **\n%s\n", err, o)
+	}
+	return fmt.Sprintf("** docker container list **\n%s\n", o)
+}
+
 func TailDockerLogs(lines int, nodes []DockerNode) string {
+	if len(nodes) == 0 {
+		return "** no nodes to read docker logs from **\n"
+	}
 	logs := &strings.Builder{}
 	for _, node := range nodes {
 		cmd := fmt.Sprintf("docker logs %s --tail=%d", node.Name, lines)
-		if l, err := RunCommand(cmd); err != nil {
+		if l, err := tests.RunCommand(cmd); err != nil {
 			fmt.Fprintf(logs, "** failed to read docker logs for node %s ***\n%v\n", node.Name, err)
 		} else {
 			fmt.Fprintf(logs, "** docker logs for node %s ***\n%s\n", node.Name, l)

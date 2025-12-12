@@ -51,13 +51,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        etest: [btrfs, embeddedmirror, externalip, privateregistry, rootless, s3, startup, wasm]
+        etest: [btrfs, embeddedmirror, externalip, privateregistry, rootless, s3, startup, wasm, multus]
       max-parallel: 5
     steps:
       - name: "Checkout"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with: {fetch-depth: 1}
-      
+      - name: Set up Docker
+        uses: docker/setup-docker-action@v4
+        with:
+          version: type=image,tag=28
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
       - name: Set up vagrant and libvirt
         uses: ./.github/actions/vagrant-setup
       - name: Vagrant R/W Cache
@@ -83,11 +87,28 @@ jobs:
            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
       - name: "Download k3s binary"
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: k3s-amd64
           path: ./dist/artifacts
-      
+      - name: Remove Unnecessary Tools
+        run: |
+          sudo rm -rf \
+            /home/linuxbrew \
+            /home/packer \
+            /opt/az \
+            /opt/microsoft \
+            /usr/lib/firefox \
+            /usr/lib/google-cloud-sdk \
+            /usr/local/julia* \
+            /usr/local/share/boost \
+            /usr/local/share/chromium \
+            /usr/local/share/powershell \
+            /usr/share/az* \
+            /usr/share/dotnet \
+            /usr/share/miniconda \
+            /usr/share/swift
+          df -khl
       - name: Run ${{ matrix.etest }} Test
         env:
           E2E_GOCOVER: "true"
@@ -96,7 +117,7 @@ jobs:
           cd tests/e2e/${{ matrix.etest }}
           go test -timeout=45m ./${{ matrix.etest }}_test.go -test.v -ginkgo.v -ci -local
       - name: On Failure, Upload Journald Logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ failure() }}
         with:
           name: e2e-${{ matrix.etest }}-logs
@@ -126,7 +147,7 @@ jobs:
       channel: ${{ steps.channel_step.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: Build Go Tests
@@ -134,7 +155,7 @@ jobs:
         mkdir -p ./dist/artifacts
         go test -c -ldflags="-w -s" -o ./dist/artifacts ./tests/docker/...
     - name: Upload Go Tests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: docker-go-tests-${{ matrix.arch }}
         path: ./dist/artifacts/*.test
@@ -163,10 +184,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dtest: [autoimport, basics, bootstraptoken, cacerts, etcd, hardened, lazypull, skew, secretsencryption, snapshotrestore, svcpoliciesandfirewall, token, upgrade]
+        dtest: [autoimport, basics, bootstraptoken, cacerts, dualstack, etcd, hardened, lazypull, skew, secretsencryption, snapshotrestore, svcpoliciesandfirewall, token, upgrade]
         arch: [amd64, arm64]
         exclude:
           - dtest: autoimport
+            arch: arm64
+          - dtest: dualstack
             arch: arm64
           - dtest: secretsencryption
             arch: arm64
@@ -179,12 +202,17 @@ jobs:
       CHANNEL: ${{ needs.build-go-tests.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
     - name: "Download K3s image"
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v6
       with:
         name: k3s-${{ matrix.arch }}
         path: ./dist/artifacts
+    - name: Set up Docker
+      uses: docker/setup-docker-action@v4
+      with:
+        version: type=image,tag=28
+        daemon-config: '{"features":{"containerd-snapshotter":true}}'
     - name: Load and set K3s image
       run: |
         if [ ${{ matrix.arch }} = "arm64" ]; then
@@ -195,10 +223,28 @@ jobs:
         IMAGE_TAG=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep 'rancher/k3s')
         echo "K3S_IMAGE=$IMAGE_TAG" >> $GITHUB_ENV
     - name: Download Go Tests
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v6
       with:
         name: docker-go-tests-${{ matrix.arch }}
         path: ./dist/artifacts
+    - name: Remove Unnecessary Tools
+      run: |
+        sudo rm -rf \
+          /home/linuxbrew \
+          /home/packer \
+          /opt/az \
+          /opt/microsoft \
+          /usr/lib/firefox \
+          /usr/lib/google-cloud-sdk \
+          /usr/local/julia* \
+          /usr/local/share/boost \
+          /usr/local/share/chromium \
+          /usr/local/share/powershell \
+          /usr/share/az* \
+          /usr/share/dotnet \
+          /usr/share/miniconda \
+          /usr/share/swift
+        df -khl
     - name: Run ${{ matrix.dtest }} Test
       # Put the compiled test binary back in the same place as the test source
       run: |
@@ -207,7 +253,7 @@ jobs:
         cd ./tests/docker/${{ matrix.dtest }}
         
         # These tests use rancher/systemd-node and have different flags.
-        CI_TESTS="autoimport hardened secretsencryption snapshotrestore svcpoliciesandfirewall token"
+        CI_TESTS="autoimport dualstack hardened secretsencryption snapshotrestore svcpoliciesandfirewall token"
         if [ ${{ matrix.dtest }} = "upgrade" ] || [ ${{ matrix.dtest }} = "skew" ]; then
           ./${{ matrix.dtest }}.test -test.timeout=0 -test.v -ginkgo.v -k3sImage=$K3S_IMAGE -channel=$CHANNEL
         elif [[ $CI_TESTS =~ ${{ matrix.dtest }} ]]; then
