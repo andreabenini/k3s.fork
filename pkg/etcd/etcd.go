@@ -143,11 +143,7 @@ func (e *membershipError) Error() string {
 }
 
 func (e *membershipError) Is(target error) bool {
-	switch target {
-	case ErrNotMember:
-		return true
-	}
-	return false
+	return target == ErrNotMember
 }
 
 func errNotMember() error { return &membershipError{} }
@@ -161,11 +157,7 @@ func (e *memberListError) Error() string {
 }
 
 func (e *memberListError) Is(target error) bool {
-	switch target {
-	case ErrMemberListFailed:
-		return true
-	}
-	return false
+	return target == ErrMemberListFailed
 }
 
 func errMemberListFailed() error { return &memberListError{} }
@@ -336,13 +328,13 @@ func (e *ETCD) IsInitialized() (bool, error) {
 	}
 
 	dir := walDir(e.config)
-	if s, err := os.Stat(dir); err == nil && s.IsDir() {
+	s, err := os.Stat(dir)
+	if err == nil && s.IsDir() {
 		return true, nil
 	} else if os.IsNotExist(err) {
 		return false, nil
-	} else {
-		return false, pkgerrors.WithMessage(err, "invalid state for wal directory "+dir)
 	}
+	return false, pkgerrors.WithMessage(err, "invalid state for wal directory "+dir)
 }
 
 // Reset resets an etcd node to a single node cluster.
@@ -421,9 +413,8 @@ func (e *ETCD) Reset(ctx context.Context, wg *sync.WaitGroup, rebootstrap func()
 			if err != nil {
 				if errors.Is(err, s3.ErrNoConfigSecret) {
 					return errors.New("cannot use S3 config secret when restoring snapshot; configuration must be set in CLI or config file")
-				} else {
-					return pkgerrors.WithMessage(err, "failed to initialize S3 client")
 				}
+				return pkgerrors.WithMessage(err, "failed to initialize S3 client")
 			}
 			dir, err := snapshotDir(e.config, true)
 			if err != nil {
@@ -767,7 +758,7 @@ func (e *ETCD) handler(next http.Handler) http.Handler {
 func (e *ETCD) infoHandler() http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
-			util.SendError(fmt.Errorf("method not allowed"), rw, req, http.StatusMethodNotAllowed)
+			util.SendError(errors.New("method not allowed"), rw, req, http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -1241,8 +1232,10 @@ func (e *ETCD) manageLearners(ctx context.Context) {
 			return
 		}
 
+		client := e.client
+
 		endpoints := getEndpoints(e.config)
-		if status, err := e.client.Status(ctx, endpoints[0]); err != nil {
+		if status, err := client.Status(ctx, endpoints[0]); err != nil {
 			logrus.Errorf("Failed to check local etcd status for learner management: %v", err)
 			return
 		} else if status.Header.MemberId != status.Leader {
@@ -1255,7 +1248,7 @@ func (e *ETCD) manageLearners(ctx context.Context) {
 			return
 		}
 
-		members, err := e.client.MemberList(ctx)
+		members, err := client.MemberList(ctx)
 		if err != nil {
 			logrus.Errorf("Failed to get etcd members for learner management: %v", err)
 			return
@@ -1435,7 +1428,6 @@ func (e *ETCD) setEtcdStatusCondition(node *v1.Node, memberName string, memberSt
 	}
 
 	if find, condition := util.GetNodeCondition(&node.Status, etcdStatusType); find >= 0 {
-
 		// if the condition is not changing, we only want to update the last heartbeat time
 		if condition.Status == newCondition.Status && condition.Reason == newCondition.Reason && condition.Message == newCondition.Message {
 			logrus.Debugf("Node %s is not changing etcd status condition", memberName)

@@ -29,6 +29,7 @@ import (
 	"github.com/otiai10/copy"
 	pkgerrors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // Bootstrap attempts to load a managed database driver, if one has been initialized or should be created/joined.
@@ -114,26 +115,26 @@ func (c *Cluster) shouldBootstrapLoad(ctx context.Context) (bool, bool, error) {
 			// Not initialized, not joining - must be initializing (cluster-init)
 			logrus.Infof("Managed %s cluster initializing", c.managedDB.EndpointName())
 			return false, false, nil
+		}
+
+		// Not initialized, but have a Join URL - fail if there's no token; if there is then validate it.
+		// Note that this is the path taken by control-plane-only nodes every startup, as they have a non-nil managedDB that is never initialized.
+		if c.config.Token == "" {
+			return false, false, errors.New("token is required to join a cluster")
+		}
+
+		// Fail if the token isn't syntactically valid, or if the CA hash on the remote server doesn't match
+		// the hash in the token. The password isn't actually checked until later when actually bootstrapping.
+		info, err := clientaccess.ParseAndValidateToken(c.config.JoinURL, c.config.Token, opts...)
+		if err != nil {
+			return false, false, pkgerrors.WithMessage(err, "failed to validate token")
+		}
+		c.clientAccessInfo = info
+
+		if c.config.DisableETCD {
+			logrus.Infof("Managed %s disabled on this node", c.managedDB.EndpointName())
 		} else {
-			// Not initialized, but have a Join URL - fail if there's no token; if there is then validate it.
-			// Note that this is the path taken by control-plane-only nodes every startup, as they have a non-nil managedDB that is never initialized.
-			if c.config.Token == "" {
-				return false, false, errors.New("token is required to join a cluster")
-			}
-
-			// Fail if the token isn't syntactically valid, or if the CA hash on the remote server doesn't match
-			// the hash in the token. The password isn't actually checked until later when actually bootstrapping.
-			info, err := clientaccess.ParseAndValidateToken(c.config.JoinURL, c.config.Token, opts...)
-			if err != nil {
-				return false, false, pkgerrors.WithMessage(err, "failed to validate token")
-			}
-			c.clientAccessInfo = info
-
-			if c.config.DisableETCD {
-				logrus.Infof("Managed %s disabled on this node", c.managedDB.EndpointName())
-			} else {
-				logrus.Infof("Managed %s cluster not yet initialized", c.managedDB.EndpointName())
-			}
+			logrus.Infof("Managed %s cluster not yet initialized", c.managedDB.EndpointName())
 		}
 	}
 
@@ -563,19 +564,15 @@ func (c *Cluster) reconcileEtcd(ctx context.Context) error {
 		return err
 	}
 
-	for {
-		if err := e.Test(reconcileCtx, true); err != nil && !errors.Is(err, etcd.ErrNotMember) {
+	if err := wait.PollUntilContextCancel(reconcileCtx, time.Second*5, true, func(ctx context.Context) (bool, error) {
+		if err := e.Test(ctx, true); err != nil && !errors.Is(err, etcd.ErrNotMember) {
 			logrus.Infof("Failed to test temporary data store connection: %v", err)
-		} else {
-			logrus.Info(e.EndpointName() + " temporary data store connection OK")
-			break
+			return false, nil
 		}
-
-		select {
-		case <-time.After(5 * time.Second):
-		case <-reconcileCtx.Done():
-			break
-		}
+		logrus.Info(e.EndpointName() + " temporary data store connection OK")
+		return true, nil
+	}); err != nil {
+		return err
 	}
 
 	data, err := c.readBootstrapFromDisk()

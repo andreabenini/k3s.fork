@@ -35,7 +35,6 @@ func Test_findNetMode(t *testing.T) {
 		{"wrong input", "wrong", false, false, true},
 	}
 	for _, tt := range tests {
-
 		t.Run(tt.name, func(t *testing.T) {
 			netCidrs := stringToCIDR(tt.args)
 			got, err := findNetMode(netCidrs)
@@ -80,7 +79,7 @@ func Test_createFlannelConf(t *testing.T) {
 			}
 			data, err := os.ReadFile("test_file")
 			if err != nil {
-				t.Errorf("Something went wrong when reading the flannel config file")
+				t.Error("Something went wrong when reading the flannel config file")
 			}
 			for _, config := range tt.wantConfig {
 				isExist, _ := regexp.Match(config, data)
