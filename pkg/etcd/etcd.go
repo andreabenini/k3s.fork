@@ -28,7 +28,6 @@ import (
 	"github.com/k3s-io/k3s/pkg/daemons/executor"
 	"github.com/k3s-io/k3s/pkg/etcd/s3"
 	"github.com/k3s-io/k3s/pkg/etcd/snapshot"
-	embedded "github.com/k3s-io/k3s/pkg/executor/embed/etcd"
 	"github.com/k3s-io/k3s/pkg/server/auth"
 	"github.com/k3s-io/k3s/pkg/signals"
 	"github.com/k3s-io/k3s/pkg/util"
@@ -36,7 +35,6 @@ import (
 	kine "github.com/k3s-io/kine/pkg/app"
 	"github.com/k3s-io/kine/pkg/client"
 	"github.com/k3s-io/kine/pkg/endpoint"
-	"github.com/otiai10/copy"
 	pkgerrors "github.com/pkg/errors"
 	certutil "github.com/rancher/dynamiclistener/cert"
 	controllerv1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
@@ -720,6 +718,11 @@ func (e *ETCD) Register(handler http.Handler) (http.Handler, error) {
 // or if force is set to true, a new name will be generated and written to disk. The persistent
 // name is used on subsequent calls.
 func (e *ETCD) setName(force bool) error {
+	// don't create the name file if etcd is disabled
+	if e.config.DisableETCD {
+		return nil
+	}
+
 	fileName := nameFile(e.config)
 	data, err := os.ReadFile(fileName)
 	if os.IsNotExist(err) || force {
@@ -1072,74 +1075,6 @@ func (e *ETCD) cluster(ctx context.Context, wg *sync.WaitGroup, reset bool, opti
 	}, e.config.ExtraEtcdArgs, e.Test)
 }
 
-func (e *ETCD) StartEmbeddedTemporary(ctx context.Context, wg *sync.WaitGroup) error {
-	etcdDataDir := dbDir(e.config)
-	tmpDataDir := etcdDataDir + "-tmp"
-	os.RemoveAll(tmpDataDir)
-
-	go func() {
-		<-ctx.Done()
-		if err := os.RemoveAll(tmpDataDir); err != nil {
-			logrus.Warnf("Failed to remove etcd temp dir: %v", err)
-		}
-	}()
-
-	if e.client != nil {
-		return errors.New("etcd datastore already started")
-	}
-
-	client, conn, err := getClient(ctx, e.config)
-	if err != nil {
-		return err
-	}
-	e.client = client
-
-	go func() {
-		<-ctx.Done()
-		e.client = nil
-		conn.Close()
-	}()
-
-	if err := copy.Copy(etcdDataDir, tmpDataDir, copy.Options{PreserveOwner: true}); err != nil {
-		return err
-	}
-
-	endpoints := getEndpoints(e.config)
-	clientURL := endpoints[0]
-	// peer URL is usually 1 more than client
-	peerURL, err := addPort(endpoints[0], 1)
-	if err != nil {
-		return err
-	}
-	// client http URL is usually 3 more than client, after peer and metrics
-	clientHTTPURL, err := addPort(endpoints[0], 3)
-	if err != nil {
-		return err
-	}
-
-	return embedded.StartETCD(ctx, wg, &executor.ETCDConfig{
-		InitialOptions:       executor.InitialOptions{AdvertisePeerURL: peerURL},
-		DataDir:              tmpDataDir,
-		ForceNewCluster:      true,
-		AdvertiseClientURLs:  clientURL,
-		ListenClientURLs:     clientURL,
-		ListenClientHTTPURLs: clientHTTPURL,
-		ListenPeerURLs:       peerURL,
-		Logger:               "zap",
-		LogOutputs:           []string{"stderr"},
-		HeartbeatInterval:    500,
-		ElectionTimeout:      5000,
-		SnapshotCount:        10000,
-		Name:                 e.name,
-		SocketOpts: executor.ETCDSocketOpts{
-			ReuseAddress: true,
-			ReusePort:    true,
-		},
-		ExperimentalInitialCorruptCheck:         true,
-		ExperimentalWatchProgressNotifyInterval: e.config.Datastore.NotifyInterval,
-	}, append(e.config.ExtraEtcdArgs, "--max-snapshots=0", "--max-wals=0"))
-}
-
 func addPort(address string, offset int) (string, error) {
 	u, err := url.Parse(address)
 	if err != nil {
@@ -1155,6 +1090,11 @@ func addPort(address string, offset int) (string, error) {
 
 // RemovePeer removes a peer from the cluster. The peer name and IP address must both match.
 func (e *ETCD) RemovePeer(ctx context.Context, name, address string, allowSelfRemoval bool) error {
+	// do not remove self if we have never started etcd on this node
+	if name == "" {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, memberRemovalTimeout)
 	defer cancel()
 	members, err := e.client.MemberList(ctx)
@@ -1746,9 +1686,10 @@ func (e *ETCD) RemoveSelf(ctx context.Context) error {
 
 	// backup the data dir to avoid issues when re-enabling etcd
 	oldDataDir := dbDir(e.config) + "-old-" + strconv.Itoa(int(time.Now().Unix()))
-
-	// move the data directory to a temp path
-	return os.Rename(dbDir(e.config), oldDataDir)
+	if err := os.Rename(dbDir(e.config), oldDataDir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // DefaultEndpointConfig returns default kine endpoint config, with k3s default
