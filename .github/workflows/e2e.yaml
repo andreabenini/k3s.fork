@@ -74,10 +74,10 @@ jobs:
             /usr/share/swift
           df -khl
       - name: "Checkout"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with: {fetch-depth: 1}
       - name: Set up Docker
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5
         with:
           version: type=image,tag=28
           daemon-config: '{"features":{"containerd-snapshotter":true}}'
@@ -86,14 +86,14 @@ jobs:
         uses: ./.github/actions/vagrant-setup
       - name: Vagrant R/W Cache
         if: matrix.etest != 'btrfs' && github.ref == 'refs/heads/main'
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
              ~/.vagrant.d/boxes
           key: ${{ matrix.etest != 'btrfs' && 'vagrant-box-ubuntu-2404' || 'vagrant-box-leap' }}
       - name: Vagrant Read Cache
         if: matrix.etest != 'btrfs' && github.ref != 'refs/heads/main'
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
              ~/.vagrant.d/boxes
@@ -104,11 +104,15 @@ jobs:
         uses: ./.github/actions/setup-go
       - name: Install Kubectl
         run: |
-           STABLE_VERSION=$(yq '.channels[] | select(.name == "stable") | .latest | sub("\+.*", "")' channel.yaml)
-           curl -LO "https://dl.k8s.io/release/${STABLE_VERSION}/bin/linux/amd64/kubectl"
-           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+           set -euo pipefail
+           STABLE_VERSION=v1.34.6
+           KUBECTL_SHA256=3166155b17198c0af34ff5a360bd4d9d58db98bafadc6f3c2a57ae560563cd6b
+           curl -fsSLo ./kubectl "https://dl.k8s.io/release/${STABLE_VERSION}/bin/linux/amd64/kubectl"
+           echo "${KUBECTL_SHA256}  ./kubectl" | sha256sum -c -
+           sudo install -o root -g root -m 0755 ./kubectl /usr/local/bin/kubectl
+           rm -f ./kubectl
       - name: "Download k3s binary"
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: k3s-amd64
           path: ./dist/artifacts
@@ -120,20 +124,20 @@ jobs:
           cd tests/e2e/${{ matrix.etest }}
           go test -timeout=45m ./${{ matrix.etest }}_test.go -test.v -ginkgo.v -ci -local
       - name: On Failure, Upload Journald Logs
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: ${{ failure() }}
         with:
           name: e2e-${{ matrix.etest }}-logs
           path: tests/e2e/${{ matrix.etest }}/*log.txt
           retention-days: 30
       - name: On Failure, Launch Debug Session
-        uses: lhotari/action-upterm@v1
+        uses: lhotari/action-upterm@b0357f23233f5ea6d58947c0c402e0631bab7334 # v1
         if: ${{ failure() }}
         with:
           ## If no one connects after 5 minutes, shut down server.
           wait-timeout-minutes: 5
       - name: Upload Results To Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: tests/e2e/${{ matrix.etest }}/coverage.out
@@ -150,7 +154,7 @@ jobs:
       channel: ${{ steps.channel_step.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: Build Go Tests
@@ -158,7 +162,7 @@ jobs:
         mkdir -p ./dist/artifacts
         go test -c -ldflags="-w -s" -o ./dist/artifacts ./tests/docker/...
     - name: Upload Go Tests
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: docker-go-tests-${{ matrix.arch }}
         path: ./dist/artifacts/*.test
@@ -187,12 +191,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dtest: [autoimport, basics, bootstraptoken, cacerts, dualstack, etcd, hardened, lazypull, skew, secretsencryption, snapshotrestore, svcpoliciesandfirewall, token, upgrade]
+        dtest: [autoimport, basics, bootstraptoken, cacerts, dualstack, etcd, hardened, lazypull, nixsnapshotter, skew, secretsencryption, snapshotrestore, svcpoliciesandfirewall, token, upgrade]
         arch: [amd64, arm64]
         exclude:
           - dtest: autoimport
             arch: arm64
           - dtest: dualstack
+            arch: arm64
+          - dtest: nixsnapshotter
             arch: arm64
           - dtest: secretsencryption
             arch: arm64
@@ -224,14 +230,14 @@ jobs:
           /usr/share/swift
         df -khl
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
     - name: "Download K3s image"
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       with:
         name: k3s-${{ matrix.arch }}
         path: ./dist/artifacts
     - name: Set up Docker
-      uses: docker/setup-docker-action@v4
+      uses: docker/setup-docker-action@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5
       with:
         version: type=image,tag=28
         daemon-config: '{"features":{"containerd-snapshotter":true}}'
@@ -245,8 +251,16 @@ jobs:
         docker image load -i ./dist/artifacts/k3s-image.tar
         IMAGE_TAG=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep 'rancher/k3s')
         echo "K3S_IMAGE=$IMAGE_TAG" >> $GITHUB_ENV
+    - name: Install Nix
+      if: matrix.dtest == 'nixsnapshotter'
+      uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+    - name: Build nix test image
+      if: matrix.dtest == 'nixsnapshotter'
+      run: |
+        nix build github:pdtpartners/nix-snapshotter#image-hello
+        cp result ./tests/docker/resources/nix-hello-image.tar
     - name: Download Go Tests
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       with:
         name: docker-go-tests-${{ matrix.arch }}
         path: ./dist/artifacts

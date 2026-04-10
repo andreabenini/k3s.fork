@@ -19,10 +19,10 @@ import (
 	controllersv1 "github.com/k3s-io/api/pkg/generated/controllers/k3s.cattle.io/v1"
 	"github.com/k3s-io/k3s/pkg/agent/util"
 	pkgutil "github.com/k3s-io/k3s/pkg/util"
-	pkgerrors "github.com/pkg/errors"
+	"github.com/k3s-io/k3s/pkg/util/errors"
+	"github.com/k3s-io/k3s/pkg/util/logger"
 	"github.com/rancher/wrangler/v3/pkg/apply"
 	"github.com/rancher/wrangler/v3/pkg/kv"
-	"github.com/rancher/wrangler/v3/pkg/merr"
 	"github.com/rancher/wrangler/v3/pkg/objectset"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
@@ -84,7 +84,7 @@ type watcher struct {
 
 // start calls listFiles at regular intervals to trigger application of manifests that have changed on disk.
 func (w *watcher) start(ctx context.Context, client kubernetes.Interface) {
-	w.recorder = pkgutil.BuildControllerEventRecorder(client, ControllerName, metav1.NamespaceSystem)
+	w.recorder = pkgutil.BuildControllerEventRecorder(logger.NewContext(ctx, ControllerName), client, ControllerName, metav1.NamespaceSystem)
 	force := true
 	for {
 		if err := w.listFiles(force); err == nil {
@@ -108,7 +108,7 @@ func (w *watcher) listFiles(force bool) error {
 			errs = append(errs, err)
 		}
 	}
-	return merr.NewErrors(errs...)
+	return errors.Join(errs...)
 }
 
 // listFilesIn recursively processes all files within a path, and checks them against the disable and skip lists. Files found that
@@ -165,7 +165,7 @@ func (w *watcher) listFilesIn(base string, force bool) error {
 		// Disabled files are not just skipped, but actively deleted from the filesystem
 		if shouldDisableFile(base, path, w.disables) {
 			if err := w.delete(path); err != nil {
-				errs = append(errs, pkgerrors.WithMessagef(err, "failed to delete %s", path))
+				errs = append(errs, errors.WithMessagef(err, "failed to delete %s", path))
 			}
 			continue
 		}
@@ -178,13 +178,13 @@ func (w *watcher) listFilesIn(base string, force bool) error {
 			continue
 		}
 		if err := w.deploy(path, !force); err != nil {
-			errs = append(errs, pkgerrors.WithMessagef(err, "failed to process %s", path))
+			errs = append(errs, errors.WithMessagef(err, "failed to process %s", path))
 		} else {
 			w.modTime[path] = modTime
 		}
 	}
 
-	return merr.NewErrors(errs...)
+	return errors.Join(errs...)
 }
 
 // deploy loads yaml from a manifest on disk, creates an AddOn resource to track its application, and then applies

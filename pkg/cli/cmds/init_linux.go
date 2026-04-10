@@ -5,9 +5,9 @@ package cmds
 import (
 	"os"
 
+	"github.com/k3s-io/k3s/pkg/util/errors"
 	"github.com/moby/sys/userns"
-	pkgerrors "github.com/pkg/errors"
-	"github.com/rootless-containers/rootlesskit/v2/pkg/parent/cgrouputil"
+	"github.com/rootless-containers/rootlesskit/pkg/parent/cgrouputil"
 )
 
 // EvacuateCgroup2 will handle evacuating the root cgroup in order to enable subtree_control,
@@ -17,7 +17,7 @@ func EvacuateCgroup2() error {
 		// The root cgroup has to be empty to enable subtree_control, so evacuate it by placing
 		// ourselves in the init cgroup.
 		if err := cgrouputil.EvacuateCgroup2("init"); err != nil {
-			return pkgerrors.WithMessage(err, "failed to evacuate root cgroup")
+			return errors.WithMessage(err, "failed to evacuate root cgroup")
 		}
 	}
 	return nil

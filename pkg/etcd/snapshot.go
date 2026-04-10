@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -25,9 +24,9 @@ import (
 	"github.com/k3s-io/k3s/pkg/etcd/snapshot"
 	"github.com/k3s-io/k3s/pkg/etcd/snapshotmetrics"
 	"github.com/k3s-io/k3s/pkg/util"
+	"github.com/k3s-io/k3s/pkg/util/errors"
 	"github.com/k3s-io/k3s/pkg/util/metrics"
 	"github.com/k3s-io/k3s/pkg/version"
-	pkgerrors "github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	snapshotv3 "go.etcd.io/etcd/client/v3/snapshot"
@@ -103,91 +102,102 @@ func snapshotDir(config *config.Control, create bool) (string, error) {
 
 // compressSnapshot compresses the given snapshot and provides the
 // caller with the path to the file.
-func (e *ETCD) compressSnapshot(snapshotDir, snapshotName, snapshotPath string, now time.Time) (string, error) {
-	logrus.Info("Compressing etcd snapshot file: " + snapshotName)
+func (e *ETCD) compressSnapshot(snapshotDir, snapshotFilename string, mtime time.Time) (zipPath string, err error) {
+	logrus.Info("Compressing etcd snapshot file: " + snapshotFilename)
+	snapshotPath := filepath.Join(snapshotDir, snapshotFilename)
+	zipPath = snapshotPath + snapshot.CompressedExtension
 
-	zippedSnapshotName := snapshotName + snapshot.CompressedExtension
-	zipPath := filepath.Join(snapshotDir, zippedSnapshotName)
+	defer func() {
+		if err != nil {
+			os.Remove(zipPath)
+		}
+	}()
 
-	zf, err := os.Create(zipPath)
+	sf, err := os.Open(snapshotPath)
 	if err != nil {
 		return "", err
 	}
-	defer zf.Close()
+	defer sf.Close()
 
-	zipWriter := zip.NewWriter(zf)
-	defer zipWriter.Close()
-
-	uncompressedPath := filepath.Join(snapshotDir, snapshotName)
-	fileToZip, err := os.Open(uncompressedPath)
+	fi, err := sf.Stat()
 	if err != nil {
-		os.Remove(zipPath)
-		return "", err
-	}
-	defer fileToZip.Close()
-
-	info, err := fileToZip.Stat()
-	if err != nil {
-		os.Remove(zipPath)
 		return "", err
 	}
 
-	header, err := zip.FileInfoHeader(info)
+	of, err := os.Create(zipPath)
 	if err != nil {
-		os.Remove(zipPath)
+		return "", err
+	}
+	defer of.Close()
+
+	zw := zip.NewWriter(of)
+	defer zw.Close()
+
+	zfi, err := zip.FileInfoHeader(fi)
+	if err != nil {
 		return "", err
 	}
 
-	header.Name = snapshotName
-	header.Method = zip.Deflate
-	header.Modified = now
+	zfi.Name = snapshotFilename
+	zfi.Method = zip.Deflate
+	zfi.Modified = mtime
 
-	writer, err := zipWriter.CreateHeader(header)
+	hw, err := zw.CreateHeader(zfi)
 	if err != nil {
-		os.Remove(zipPath)
 		return "", err
 	}
-	_, err = io.Copy(writer, fileToZip)
 
+	_, err = io.Copy(hw, sf)
 	return zipPath, err
 }
 
 // decompressSnapshot decompresses the given snapshot and provides the caller
 // with the full path to the uncompressed snapshot.
-func (e *ETCD) decompressSnapshot(snapshotDir, snapshotFile string) (string, error) {
-	logrus.Info("Decompressing etcd snapshot file: " + snapshotFile)
+func (e *ETCD) decompressSnapshot(snapshotDir, snapshotFilename string) (unzipPath string, err error) {
+	logrus.Info("Decompressing etcd snapshot file: " + snapshotFilename)
+	snapshotPath := filepath.Join(snapshotDir, snapshotFilename)
+	unzipPath = strings.TrimSuffix(snapshotPath, snapshot.CompressedExtension)
 
-	r, err := zip.OpenReader(snapshotFile)
+	defer func() {
+		if err != nil {
+			os.Remove(unzipPath)
+		}
+	}()
+
+	sf, err := os.Open(snapshotPath)
 	if err != nil {
 		return "", err
 	}
-	defer r.Close()
+	defer sf.Close()
 
-	var decompressed *os.File
-	for _, sf := range r.File {
-		decompressed, err = os.OpenFile(strings.Replace(sf.Name, snapshot.CompressedExtension, "", -1), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, sf.Mode())
-		if err != nil {
-			return "", err
-		}
-
-		//revive:disable-next-line:defer
-		defer decompressed.Close()
-
-		ss, err := sf.Open()
-		if err != nil {
-			return "", err
-		}
-
-		//revive:disable-next-line:defer
-		defer ss.Close()
-
-		if _, err := io.Copy(decompressed, ss); err != nil {
-			os.Remove(decompressed.Name())
-			return "", err
-		}
+	fi, err := sf.Stat()
+	if err != nil {
+		return "", err
 	}
 
-	return decompressed.Name(), nil
+	zf, err := zip.NewReader(sf, fi.Size())
+	if err != nil {
+		return "", err
+	}
+
+	if len(zf.File) != 1 {
+		return "", errors.New("unexpected compressed etcd snapshot contents")
+	}
+
+	cf, err := zf.File[0].Open()
+	if err != nil {
+		return "", err
+	}
+	defer cf.Close()
+
+	of, err := os.OpenFile(unzipPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	defer of.Close()
+
+	_, err = io.Copy(of, cf)
+	return unzipPath, err
 }
 
 // Snapshot attempts to save a new snapshot to the configured directory, and then clean up any old and failed
@@ -232,7 +242,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 	endpoints := getEndpoints(e.config)
 	status, err := e.client.Status(ctx, endpoints[0])
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to check etcd status for snapshot")
+		return nil, errors.WithMessage(err, "failed to check etcd status for snapshot")
 	}
 
 	if status.IsLearner {
@@ -242,17 +252,17 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 
 	snapshotDir, err := snapshotDir(e.config, true)
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to get etcd-snapshot-dir")
+		return nil, errors.WithMessage(err, "failed to get etcd-snapshot-dir")
 	}
 
 	cfg, err := getClientConfig(ctx, e.config)
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to get config for etcd snapshot")
+		return nil, errors.WithMessage(err, "failed to get config for etcd snapshot")
 	}
 
 	tokenHash, err := util.GetTokenHash(e.config)
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to get server token hash for etcd snapshot")
+		return nil, errors.WithMessage(err, "failed to get server token hash for etcd snapshot")
 	}
 
 	nodeName := os.Getenv("NODE_NAME")
@@ -282,7 +292,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 		}
 		logrus.Errorf("Failed to take etcd snapshot: %v", err)
 		if err := e.addSnapshotData(*sf); err != nil {
-			return nil, pkgerrors.WithMessage(err, "failed to sync ETCDSnapshotFile")
+			return nil, errors.WithMessage(err, "failed to sync ETCDSnapshotFile")
 		}
 	}
 
@@ -290,7 +300,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 	// If the snapshot attempt was successful, sf will be nil as we did not set it to store the error message.
 	if sf == nil {
 		if e.config.EtcdSnapshotCompress {
-			zipPath, err := e.compressSnapshot(snapshotDir, snapshotName, snapshotPath, now)
+			zipPath, err := e.compressSnapshot(snapshotDir, snapshotName, now)
 
 			// ensure that the unncompressed snapshot is cleaned up even if compression fails
 			if err := os.Remove(snapshotPath); err != nil && !os.IsNotExist(err) {
@@ -298,7 +308,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 			}
 
 			if err != nil {
-				return nil, pkgerrors.WithMessage(err, "failed to compress snapshot")
+				return nil, errors.WithMessage(err, "failed to compress snapshot")
 			}
 			snapshotPath = zipPath
 			logrus.Info("Compressed snapshot: " + snapshotPath)
@@ -306,7 +316,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 
 		f, err := os.Stat(snapshotPath)
 		if err != nil {
-			return nil, pkgerrors.WithMessage(err, "unable to retrieve snapshot information from local snapshot")
+			return nil, errors.WithMessage(err, "unable to retrieve snapshot information from local snapshot")
 		}
 
 		sf = &snapshot.File{
@@ -348,7 +358,7 @@ func (e *ETCD) snapshot(ctx context.Context) (_ *managed.SnapshotResult, rerr er
 				logrus.Warnf("Unable to initialize S3 client: %v", err)
 				if !errors.Is(err, s3.ErrNoConfigSecret) {
 					metrics.ObserveWithStatus(snapshotmetrics.SaveS3Count, s3Start, err)
-					err = pkgerrors.WithMessage(err, "failed to initialize S3 client")
+					err = errors.WithMessage(err, "failed to initialize S3 client")
 					sf = &snapshot.File{
 						Name:     f.Name(),
 						NodeName: "s3",
@@ -403,7 +413,7 @@ func (e *ETCD) listLocalSnapshots() (map[string]snapshot.File, error) {
 	snapshots := make(map[string]snapshot.File)
 	snapshotDir, err := snapshotDir(e.config, true)
 	if err != nil {
-		return snapshots, pkgerrors.WithMessage(err, "failed to get etcd-snapshot-dir")
+		return snapshots, errors.WithMessage(err, "failed to get etcd-snapshot-dir")
 	}
 
 	if err := filepath.Walk(snapshotDir, func(path string, file os.FileInfo, err error) error {
@@ -471,7 +481,7 @@ func (e *ETCD) getS3Client(ctx context.Context) (*s3.Client, error) {
 func (e *ETCD) PruneSnapshots(ctx context.Context) (*managed.SnapshotResult, error) {
 	snapshotDir, err := snapshotDir(e.config, false)
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to get etcd-snapshot-dir")
+		return nil, errors.WithMessage(err, "failed to get etcd-snapshot-dir")
 	}
 
 	res := &managed.SnapshotResult{}
@@ -509,7 +519,7 @@ func (e *ETCD) ListSnapshots(ctx context.Context) (*k3s.ETCDSnapshotFileList, er
 		if s3client, err := e.getS3Client(ctx); err != nil {
 			logrus.Warnf("Unable to initialize S3 client: %v", err)
 			if !errors.Is(err, s3.ErrNoConfigSecret) {
-				return nil, pkgerrors.WithMessage(err, "failed to initialize S3 client")
+				return nil, errors.WithMessage(err, "failed to initialize S3 client")
 			}
 		} else {
 			sfs, err := s3client.ListSnapshots(ctx)
@@ -543,7 +553,7 @@ func (e *ETCD) ListSnapshots(ctx context.Context) (*k3s.ETCDSnapshotFileList, er
 func (e *ETCD) DeleteSnapshots(ctx context.Context, snapshots []string) (*managed.SnapshotResult, error) {
 	snapshotDir, err := snapshotDir(e.config, false)
 	if err != nil {
-		return nil, pkgerrors.WithMessage(err, "failed to get etcd-snapshot-dir")
+		return nil, errors.WithMessage(err, "failed to get etcd-snapshot-dir")
 	}
 
 	var s3client *s3.Client
@@ -552,7 +562,7 @@ func (e *ETCD) DeleteSnapshots(ctx context.Context, snapshots []string) (*manage
 		if err != nil {
 			logrus.Warnf("Unable to initialize S3 client: %v", err)
 			if !errors.Is(err, s3.ErrNoConfigSecret) {
-				return nil, pkgerrors.WithMessage(err, "failed to initialize S3 client")
+				return nil, errors.WithMessage(err, "failed to initialize S3 client")
 			}
 		}
 	}
@@ -716,7 +726,7 @@ func (e *ETCD) reconcileSnapshotData(ctx context.Context, res *managed.SnapshotR
 			logrus.Warnf("Unable to initialize S3 client: %v", err)
 			if !errors.Is(err, s3.ErrNoConfigSecret) {
 				metrics.ObserveWithStatus(snapshotmetrics.ReconcileS3Count, s3Start, err)
-				return pkgerrors.WithMessage(err, "failed to initialize S3 client")
+				return errors.WithMessage(err, "failed to initialize S3 client")
 			}
 		} else {
 			s3Snapshots, err := s3client.ListSnapshots(ctx)

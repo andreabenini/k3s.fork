@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,28 +17,27 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/core/remotes/docker"
+	"github.com/go-logr/logr"
+	leveldb "github.com/ipfs/go-ds-leveldb"
+	ipfslog "github.com/ipfs/go-log/v2"
 	"github.com/k3s-io/k3s/pkg/agent/https"
 	"github.com/k3s-io/k3s/pkg/daemons/config"
 	"github.com/k3s-io/k3s/pkg/server/auth"
+	"github.com/k3s-io/k3s/pkg/util/errors"
 	"github.com/k3s-io/k3s/pkg/util/logger"
+	"github.com/k3s-io/k3s/pkg/util/mux"
 	"github.com/k3s-io/k3s/pkg/version"
-	"github.com/rancher/dynamiclistener/cert"
-	"k8s.io/apimachinery/pkg/util/wait"
-
-	"github.com/go-logr/logr"
-	"github.com/gorilla/mux"
-	leveldb "github.com/ipfs/go-ds-leveldb"
-	ipfslog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoreds"
-	pkgerrors "github.com/pkg/errors"
+	"github.com/rancher/dynamiclistener/cert"
 	"github.com/sirupsen/logrus"
 	"github.com/spegel-org/spegel/pkg/metrics"
 	"github.com/spegel-org/spegel/pkg/oci"
 	"github.com/spegel-org/spegel/pkg/registry"
 	"github.com/spegel-org/spegel/pkg/routing"
 	"github.com/spegel-org/spegel/pkg/state"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/component-base/metrics/legacyregistry"
 )
 
@@ -156,7 +154,7 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 		c.ExternalAddress, c.RegistryPort, registries)
 
 	// set up the various logging logging frameworks
-	ctx = logr.NewContext(ctx, logger.NewLogrusSink(nil).AsLogr().WithName("spegel"))
+	ctx = logger.NewContext(ctx, "spegel")
 	level := ipfslog.LevelInfo
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
 		level = ipfslog.LevelDebug
@@ -166,7 +164,7 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 	// Get containerd client
 	caCert, err := os.ReadFile(c.ServerCAFile)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to read server CA")
+		return errors.WithMessage(err, "failed to read server CA")
 	}
 
 	certPool := x509.NewCertPool()
@@ -190,33 +188,33 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 	}
 	ociStore, err := NewDeferredContainerd(ctx, nodeConfig.Containerd.Address, registryNamespace, storeOpts...)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to create OCI store")
+		return errors.WithMessage(err, "failed to create OCI store")
 	}
 
 	// create or load persistent private key
 	keyFile := filepath.Join(nodeConfig.Containerd.Opt, "peer.key")
 	keyBytes, _, err := cert.LoadOrGenerateKeyFile(keyFile, false)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to load or generate p2p private key")
+		return errors.WithMessage(err, "failed to load or generate p2p private key")
 	}
 	privKey, err := cert.ParsePrivateKeyPEM(keyBytes)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to parse p2p private key")
+		return errors.WithMessage(err, "failed to parse p2p private key")
 	}
 	p2pKey, _, err := crypto.KeyPairFromStdKey(privKey)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to convert p2p private key")
+		return errors.WithMessage(err, "failed to convert p2p private key")
 	}
 
 	// create a peerstore to allow persisting nodes across restarts
 	peerFile := filepath.Join(nodeConfig.Containerd.Opt, "peerstore.db")
 	ds, err := leveldb.NewDatastore(peerFile, nil)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to create peerstore datastore")
+		return errors.WithMessage(err, "failed to create peerstore datastore")
 	}
 	ps, err := pstoreds.NewPeerstore(ctx, ds, pstoreds.DefaultOpts())
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to create peerstore")
+		return errors.WithMessage(err, "failed to create peerstore")
 	}
 
 	// get latest tag configuration override
@@ -250,7 +248,7 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 	}
 	c.router, err = routing.NewP2PRouter(ctx, routerAddr, NewNotSelfBootstrapper(c.Bootstrapper), c.RegistryPort, opts...)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to create P2P router")
+		return errors.WithMessage(err, "failed to create P2P router")
 	}
 	go c.router.Run(ctx)
 
@@ -263,7 +261,7 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 	}
 	reg, err := registry.NewRegistry(ociStore, c.router, registryOpts...)
 	if err != nil {
-		return pkgerrors.WithMessage(err, "failed to create embedded registry")
+		return errors.WithMessage(err, "failed to create embedded registry")
 	}
 	regSvr := &http.Server{
 		Addr:    ":" + c.RegistryPort,
@@ -296,10 +294,10 @@ func (c *Config) Start(ctx context.Context, nodeConfig *config.Node, criReadyCha
 	if err != nil {
 		return err
 	}
-	mRouter.PathPrefix("/v2").Handler(regSvr.Handler)
-	sRouter := mRouter.PathPrefix("/v1-{program}/p2p").Subrouter()
+	mRouter.Handle("/v2/", regSvr.Handler)
+	sRouter := mRouter.SubRouter("/v1-" + version.Program + "/p2p")
 	sRouter.Use(auth.MaxInFlight(maxNonMutatingPeerInfoRequests, maxMutatingPeerInfoRequests))
-	sRouter.Handle("", c.peerInfo())
+	sRouter.Handle("/", c.peerInfo())
 
 	// Wait up to 5 seconds for the p2p network to find peers.
 	if err := wait.PollUntilContextTimeout(ctx, time.Second, resolveTimeout, true, func(ctx context.Context) (bool, error) {

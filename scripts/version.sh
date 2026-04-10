@@ -55,7 +55,7 @@ if [ -z "$VERSION_CRI_DOCKERD" ]; then
   VERSION_CRI_DOCKERD="v0.0.0"
 fi
 
-VERSION_CNIPLUGINS="v1.9.0-k3s1"
+VERSION_CNIPLUGINS="v1.9.1-k3s1"
 VERSION_FLANNEL_PLUGIN="v1.9.0-flannel1"
 
 VERSION_KUBE_ROUTER=$(get-module-version github.com/cloudnativelabs/kube-router/v2)
@@ -64,10 +64,29 @@ if [ -z "$VERSION_KUBE_ROUTER" ]; then
 fi
 
 VERSION_ROOT="v0.15.0"
+case ${ARCH} in
+    amd64)
+      K3S_ROOT_SHA256="20066815d9941185fce3934cc3bae2fa3e2dbb46ca7e63462efb2ea59f1b15c4"
+    ;;
+    arm)
+      K3S_ROOT_SHA256="2e43dac7750da52a756a9d4e8598d6e89937d565582660b26ca124bd9c8dbfaa"
+    ;;
+    arm64)
+      K3S_ROOT_SHA256="4bdfc715dc8b5e2c4956f8686b895a56386f4cc6468215dcd22130a680650577"
+    ;;
+    riscv64)
+      K3S_ROOT_SHA256="0e79998acaa156059ba1ff676a4e5f290069e25f799de43ee016a0e780f9d4d3"
+    ;;
+    *)
+      echo "[ERROR] unsupported architecture: ${ARCH}"
+      exit 1
+    ;;
+esac
 
-VERSION_HELM_JOB="v0.9.12-build20251215"
+VERSION_HELM_JOB="v0.9.15-build20260324"
 
-VERSION_GOLANG="go"$(curl -sL "https://raw.githubusercontent.com${PKG_KUBERNETES_K3S/github.com/}/refs/tags/${VERSION_K8S_K3S}/.go-version")
+GO_VERSION_URL="https://raw.githubusercontent.com/kubernetes/kubernetes/${VERSION_K8S}/.go-version"
+VERSION_GOLANG="go"$(curl -sL "${GO_VERSION_URL}" | tr -d '[:space:]')
 
 if [[ -n "$GIT_TAG" ]]; then
     if [[ ! "$GIT_TAG" =~ ^"$VERSION_K8S"[+-] ]]; then

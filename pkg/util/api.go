@@ -2,7 +2,6 @@ package util
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -10,8 +9,7 @@ import (
 	"time"
 
 	"github.com/k3s-io/k3s/pkg/signals"
-	pkgerrors "github.com/pkg/errors"
-	"github.com/rancher/wrangler/v3/pkg/merr"
+	"github.com/k3s-io/k3s/pkg/util/errors"
 	"github.com/rancher/wrangler/v3/pkg/schemes"
 	"github.com/sirupsen/logrus"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -122,7 +120,7 @@ func WaitForAPIServerReady(ctx context.Context, kubeconfigPath string, timeout t
 	})
 
 	if err != nil {
-		return merr.NewErrors(err, lastErr)
+		return errors.Join(err, lastErr)
 	}
 
 	return nil
@@ -136,7 +134,7 @@ func APIServerReadyChan(ctx context.Context, kubeConfig string, timeout time.Dur
 
 	go func() {
 		if err := WaitForAPIServerReady(ctx, kubeConfig, timeout); err != nil {
-			signals.RequestShutdown(pkgerrors.WithMessage(err, "failed to wait for API server to become ready"))
+			signals.RequestShutdown(errors.WithMessage(err, "failed to wait for API server to become ready"))
 			return
 		}
 		close(ready)
@@ -183,7 +181,7 @@ func WaitForRBACReady(ctx context.Context, kubeconfigPath string, timeout time.D
 	})
 
 	if err != nil {
-		return merr.NewErrors(err, lastErr)
+		return errors.Join(err, lastErr)
 	}
 
 	return nil
@@ -251,9 +249,9 @@ func subjectAccessReview(authClient *authorizationv1client.AuthorizationV1Client
 	}
 }
 
-func BuildControllerEventRecorder(k8s clientset.Interface, controllerName, namespace string) record.EventRecorder {
+func BuildControllerEventRecorder(ctx context.Context, k8s clientset.Interface, controllerName, namespace string) record.EventRecorder {
 	logrus.Infof("Creating %s event broadcaster", controllerName)
-	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster := record.NewBroadcaster(record.WithContext(ctx))
 	eventBroadcaster.StartStructuredLogging(0)
 	eventBroadcaster.StartRecordingToSink(&coregetter.EventSinkImpl{Interface: k8s.CoreV1().Events(namespace)})
 	nodeName := os.Getenv("NODE_NAME")

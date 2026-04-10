@@ -378,6 +378,12 @@ func encryptionRotateKeys(ctx context.Context, control *config.Control) error {
 		return err
 	}
 
+	// Save the cluster files after the new key was added, so if something breaks during reencryption,
+	// the cluster can still be restarted with the old and new keys together.
+	if err := cluster.Save(ctx, control, true); err != nil {
+		return err
+	}
+
 	if err := secretsencrypt.WaitForEncryptionConfigReload(control.Runtime, reloadSuccesses, reloadTime); err != nil {
 		return err
 	}
@@ -447,7 +453,7 @@ func updateSecrets(ctx context.Context, control *config.Control, nodeName string
 	}
 
 	// For backwards compatibility with the old controller, we use an event recorder instead of logrus
-	recorder := util.BuildControllerEventRecorder(k8s, "secrets-reencrypt", metav1.NamespaceDefault)
+	recorder := util.BuildControllerEventRecorder(ctx, k8s, "secrets-reencrypt", metav1.NamespaceDefault)
 
 	secretPager := pager.New(pager.SimplePageFunc(func(opts metav1.ListOptions) (runtime.Object, error) {
 		return k8s.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, opts)

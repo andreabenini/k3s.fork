@@ -3,12 +3,10 @@ package agent
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 
-	"github.com/gorilla/mux"
 	"github.com/k3s-io/k3s/pkg/agent"
 	"github.com/k3s-io/k3s/pkg/agent/https"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
@@ -20,12 +18,15 @@ import (
 	"github.com/k3s-io/k3s/pkg/signals"
 	"github.com/k3s-io/k3s/pkg/spegel"
 	"github.com/k3s-io/k3s/pkg/util"
+	"github.com/k3s-io/k3s/pkg/util/errors"
+	"github.com/k3s-io/k3s/pkg/util/logger"
+	"github.com/k3s-io/k3s/pkg/util/mux"
 	"github.com/k3s-io/k3s/pkg/util/permissions"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/k3s-io/k3s/pkg/vpn"
-	pkgerrors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
+	"k8s.io/klog/v2"
 )
 
 func Run(clx *cli.Context) (rerr error) {
@@ -47,7 +48,8 @@ func Run(clx *cli.Context) (rerr error) {
 		return err
 	}
 
-	ctx := signals.SetupSignalContext()
+	klog.EnableContextualLogging(true)
+	ctx := logger.NewContext(signals.SetupSignalContext(), version.Program)
 	wg := &sync.WaitGroup{}
 
 	// If exiting due to an error, ensure that contexts are cancelled so that the
@@ -65,7 +67,7 @@ func Run(clx *cli.Context) (rerr error) {
 
 	if !cmds.AgentConfig.Rootless {
 		if err := permissions.IsPrivileged(); err != nil {
-			return pkgerrors.WithMessage(err, "agent requires additional privilege if not run with --rootless")
+			return errors.WithMessage(err, "agent requires additional privilege if not run with --rootless")
 		}
 	}
 
