@@ -30,19 +30,14 @@ permissions:
 
 jobs:
   build:
-    permissions:
-      contents: read
-      packages: write # permissions cannot be conditional, so we need to set this for all jobs
     uses: ./.github/workflows/build-k3s.yaml
     with:
       upload-image: true
+      test-coverage: true
   build-arm64:
     uses: ./.github/workflows/build-k3s.yaml
-    permissions:
-      contents: read
-      packages: write
     with:
-      arch: arm64
+      platforms: linux/arm64
       upload-image: true
   e2e:
     name: "E2E Tests"
@@ -76,10 +71,10 @@ jobs:
             /usr/share/swift
           df -khl
       - name: "Checkout"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: {fetch-depth: 1}
       - name: Set up Docker
-        uses: docker/setup-docker-action@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5
+        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
         with:
           version: type=image,tag=28
           daemon-config: '{"features":{"containerd-snapshotter":true}}'
@@ -88,20 +83,20 @@ jobs:
         uses: ./.github/actions/vagrant-setup
       - name: Vagrant Box R/W Cache
         if: matrix.etest != 'btrfs' && github.ref == 'refs/heads/main'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
              ~/.vagrant.d/boxes
           key: ${{ matrix.etest != 'btrfs' && 'vagrant-box-ubuntu-2404' || 'vagrant-box-leap' }}
       - name: Vagrant Box Read Cache
         if: matrix.etest != 'btrfs' && github.ref != 'refs/heads/main'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
              ~/.vagrant.d/boxes
           key: ${{ matrix.etest != 'btrfs' && 'vagrant-box-ubuntu-2404' || 'vagrant-box-leap' }}
       - name: Vagrant Plugins R/W Cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -109,7 +104,7 @@ jobs:
              ~/.vagrant.d/plugins.json
           key: vagrant-plugins
       - name: Vagrant Plugins Read Cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.ref != 'refs/heads/main'
         with:
           path: |
@@ -139,6 +134,7 @@ jobs:
           E2E_GOCOVER: "true"
         run: | 
           chmod +x ./dist/artifacts/k3s
+          mkdir -p /tmp/k3scov
           cd tests/e2e/${{ matrix.etest }}
           go test -timeout=45m ./${{ matrix.etest }}_test.go -test.v -ginkgo.v -ci -local
       - name: On Failure, Upload Journald Logs
@@ -155,7 +151,7 @@ jobs:
           ## If no one connects after 5 minutes, shut down server.
           wait-timeout-minutes: 5
       - name: Upload Results To Codecov
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: tests/e2e/${{ matrix.etest }}/coverage.out
@@ -172,7 +168,7 @@ jobs:
       channel: ${{ steps.channel_step.outputs.channel }}
     steps:
     - name: Checkout
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
     - name: Install Go
       uses: ./.github/actions/setup-go
     - name: Build Go Tests
@@ -248,14 +244,14 @@ jobs:
           /usr/share/swift
         df -khl
     - name: Checkout
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
     - name: "Download K3s image"
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       with:
         name: k3s-${{ matrix.arch }}
         path: ./dist/artifacts
     - name: Set up Docker
-      uses: docker/setup-docker-action@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5
+      uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
       with:
         version: type=image,tag=28
         daemon-config: '{"features":{"containerd-snapshotter":true}}'
@@ -309,9 +305,9 @@ jobs:
     if: github.repository_owner == 'k3s-io'
     steps:
     - name: Checkout
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
     - name: Set up Docker
-      uses: docker/setup-docker-action@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5
+      uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
       with:
         version: type=image,tag=28
         set-host: true

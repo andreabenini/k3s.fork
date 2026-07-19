@@ -1,13 +1,9 @@
 #!/bin/bash
 
 GO=${GO-go}
-ARCH=${ARCH:-$("${GO}" env GOARCH)}
-OS=${OS:-$("${GO}" env GOOS)}
-SUFFIX="-${ARCH}"
+. ./scripts/platform.sh
 
-if [ -z "$NO_DAPPER" ]; then
-    . ./scripts/git_version.sh
-fi
+. ./scripts/git_version.sh
 
 get-module-version(){
   go list -mod=readonly -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $1
@@ -83,7 +79,7 @@ case ${ARCH} in
     ;;
 esac
 
-VERSION_HELM_JOB="v0.11.0-build20260602"
+VERSION_HELM_JOB="v0.13.1-build20260715"
 
 if [[ -n "$GIT_TAG" ]]; then
     if [[ ! "$GIT_TAG" =~ ^"$VERSION_K8S"[+-] ]]; then
@@ -95,8 +91,3 @@ else
     VERSION="$VERSION_K8S+k3s-${COMMIT:0:8}$DIRTY"
 fi
 VERSION_TAG="$(sed -e 's/+/-/g' <<< "$VERSION")"
-
-BINARY_POSTFIX=
-if [ ${OS} = windows ]; then
-    BINARY_POSTFIX=.exe
-fi
