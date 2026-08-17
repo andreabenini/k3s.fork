@@ -38,7 +38,7 @@ jobs:
     - name: Set up Docker
       uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
       with:
-        version: type=image,tag=28
+        version: type=image,tag=29
         daemon-config: '{"features":{"containerd-snapshotter":true}}'
         set-host: true
 
@@ -95,7 +95,7 @@ jobs:
           TREE_STATE=${{ steps.git_vars.outputs.tree_state }}
           COMMIT=${{ steps.git_vars.outputs.commit }}
           DIRTY=${{ steps.git_vars.outputs.dirty }}
-          GOCOVER=${{ inputs.test-coverage && '1' || '0' }}
+          GOCOVER=${{ inputs.test-coverage && '1' || '' }}
         push: false
         provenance: mode=min
         platforms: ${{ steps.platforms.outputs.platforms }}

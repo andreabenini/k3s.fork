@@ -53,6 +53,8 @@ metadata:
   namespace: kube-system
 data:
   Corefile: |
+    # File managed by k3s. DO NOT EDIT.
+    # See: https://docs.k3s.io/advanced#coredns-custom-configuration-imports
     .:53 {
         errors
         health
