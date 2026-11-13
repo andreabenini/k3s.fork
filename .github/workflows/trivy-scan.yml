@@ -12,7 +12,7 @@ permissions:
 jobs:
   trivy_scan:
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # Required to checkout the PR's head SHA.
     outputs:
@@ -55,7 +55,9 @@ jobs:
         run: docker load -i pr-context/k3s.tar
 
       - name: Download Rancher's VEX Hub report
-        run: curl -fsSO https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/reports/rancher.openvex.json
+        run: |
+          curl -fsSO https://github.com/rancher/vexhub/raw/refs/heads/main/reports/rancher.openvex.json.gz
+          gzip -d rancher.openvex.json.gz
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -79,7 +81,7 @@ jobs:
   report_results:
     needs: trivy_scan
     if: always() # Run even if the scan fails.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write # Required to post comments.
     
@@ -115,7 +117,7 @@ jobs:
   remove_label:
     if: always() # Run even if the scan fails.
     needs: trivy_scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write # Required to remove labels from the PR.
 

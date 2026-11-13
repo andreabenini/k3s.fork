@@ -17,10 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/k3s-io/k3s/pkg/agent/proxy"
 	agentutil "github.com/k3s-io/k3s/pkg/agent/util"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
@@ -543,6 +543,7 @@ func get(ctx context.Context, envInfo *cmds.Agent, proxy proxy.Proxy) (*config.N
 		Token:                    info.String(),
 		Flannel: config.Flannel{
 			Backend:    controlConfig.FlannelBackend,
+			BackendEnv: controlConfig.FlannelBackendEnv,
 			IPv6Masq:   controlConfig.FlannelIPv6Masq,
 			ExternalIP: controlConfig.FlannelExternalIP,
 		},
@@ -676,6 +677,11 @@ func get(ctx context.Context, envInfo *cmds.Agent, proxy proxy.Proxy) (*config.N
 		}
 	}
 
+	normalized, err := reference.ParseDockerRef(nodeConfig.AgentConfig.PauseImage)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to normalize pause image reference")
+	}
+	nodeConfig.AgentConfig.PauseImage = normalized.String()
 	nodeConfig.AgentConfig.ExtraKubeletArgs = envInfo.ExtraKubeletArgs.Value()
 	nodeConfig.AgentConfig.ExtraKubeProxyArgs = envInfo.ExtraKubeProxyArgs.Value()
 	nodeConfig.AgentConfig.NodeTaints = envInfo.Taints.Value()
@@ -713,7 +719,7 @@ func get(ctx context.Context, envInfo *cmds.Agent, proxy proxy.Proxy) (*config.N
 		conf := spegel.DefaultRegistry
 		conf.ExternalAddress = nodeConfig.AgentConfig.NodeIP
 		conf.InternalAddress = controlConfig.Loopback(false)
-		conf.RegistryPort = strconv.Itoa(controlConfig.SupervisorPort)
+		conf.RegistryPort = controlConfig.SupervisorPort
 		conf.ClientCAFile = clientCAFile
 		conf.ClientCertFile = clientK3sControllerCert
 		conf.ClientKeyFile = clientK3sControllerKey

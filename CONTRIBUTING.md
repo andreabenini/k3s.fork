@@ -24,8 +24,15 @@ understanding every change. If you used AI tools in preparing your PR, you must 
 description of your PR. Listing AI tooling as a co-author, co-signing commits using an AI tool, or using
 the `assisted-by`, `co-developed` or similar commit trailer is not allowed.
 
-Large AI generated PRs and AI generated commit messages are not allowed. PRs with excessively large or
-unnecessarily scaffolded unit tests that could be replaced with a succinct E2E test will be closed.
+Be considerate of maintainer resources. Large AI generated PRs, commit messages, and issue
+reports are not allowed. Issues with excessive AI prose ("Why it matters" sections and lengthy
+contrived steps to reproduce) may be ignored or rejected.
+
+PRs may be rejected solely due to inappropriate addition of tests. Test should not be:
+* Excessively trivial (ie, validates that input=output, or covers only 3rd party code)
+* Replaceable by a succinct E2E test
+* Unnecessarily scaffolded
+* Excessively large
 
 Do not leave the first review of AI generated changes to the reviewers. Verify the changes (code review,
 testing, etc.) before submitting your PR. Reviewers may ask questions about your AI-assisted code, and if
@@ -59,11 +66,11 @@ Generally, pull requests need two approvals from maintainers to be merged. One e
 
 When addressing review feedback, it is helpful to the reviewer if additional changes are made in new commits. This allows the reviewer to easily see the delta between what they previously reviewed and the changes you added to address their feedback.
 
-Once a PR has the necessary approvals, it can be merged. Here’s how the merge should be handled:
-- If the PR is a single logical commit, the merger should use the “Rebase and merge” option. This keeps the git commit history very clean and simple and eliminates noise from "merge commits."
-- If the PR is more than one logical commit, the merger should use the “Create a merge commit” option.
+Once a PR has the necessary approvals, it can be merged. Here's how the merge should be handled:
+- If the PR is a single logical commit, the merger should use the "Rebase and merge" option. This keeps the git commit history very clean and simple and eliminates noise from "merge commits."
+- If the PR is more than one logical commit, the merger should use the "Create a merge commit" option.
 - If the PR consists of more than one commit because the author added commits to address feedback, the commits should be squashed into a single commit (or more than one logical commit, if it is a big feature that needs more commits). This can be achieved in one of two ways:
-  - The merger can use the “Squash and merge” option. If they do this, the merger is responsible for cleaning up the commit message according to the previously stated commit message guidance.
+  - The merger can use the "Squash and merge" option. If they do this, the merger is responsible for cleaning up the commit message according to the previously stated commit message guidance.
   - The pull request author, after getting the requisite approvals, can reorganize the commits as they see fit (using, for example, git rebase -i) and re-push.
 
 ## Development Workflow
